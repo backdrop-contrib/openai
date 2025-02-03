@@ -1,12 +1,168 @@
 <?php
 
 /**
+ * Implements hook_config_info().
+ */
+function openai_alt_config_info() {
+  return [
+    'openai_alt.settings' => [
+      'label' => t('OpenAI Alt Settings'),
+      'group' => t('Configuration'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_menu().
+ */
+function openai_alt_menu() {
+  $items = [];
+
+  $items['admin/config/openai/openai-alt'] = [
+    'title' => 'OpenAI Alt Text Generation',
+    'description' => 'Provides the possibility to fill out the alt text of an image field using OpenAI.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['openai_alt_settings_form'],
+    'access arguments' => ['administer site configuration'],
+    'parent' => 'admin/config/openai',
+  ];
+
+  // AJAX endpoint for autogeneration (returns JSON)
+  $items['openai-alt/generate-alt-text'] = [
+    'page callback' => 'openai_alt_generate_alt_text_callback',
+    'access callback' => 'user_access',
+    'access arguments' => ['administer site configuration'],
+    'type' => MENU_CALLBACK,
+    'delivery callback' => 'backdrop_json_output',
+  ];
+
+  // New endpoint for CKEditor autogeneration.
+  $items['openai-alt/ckeditor-autogenerate'] = [
+    'page callback' => 'openai_alt_generate_alt_text_for_ckeditor_autogenerate',
+    'access callback' => 'user_access',
+    'access arguments' => ['administer site configuration'],
+    'type' => MENU_CALLBACK,
+    'delivery callback' => 'backdrop_json_output',
+  ];
+
+  return $items;
+}
+
+/**
+ * Build the configuration form for OpenAI Alt Text.
+ *
+ * @return array
+ *   The configuration form.
+ */
+function openai_alt_settings_form(array $form, array &$form_state) {
+  // Get the configuration object to load values.
+  $config = config('openai_alt.settings');
+
+  $openai_config = config('openai.settings');
+  $apiKey = key_get_key_value($openai_config->get('api_key'));
+
+  if (empty($apiKey)) {
+    form_set_error('', t('API key is not set. Please configure the API key in OpenAI settings.'));
+    return $form;
+  }
+
+  $api = new OpenAIApi($apiKey);
+
+  $form = [];
+  $form['#config'] = 'openai_alt.settings';
+
+  // Retrieve configuration values.
+  $prompt = $config->get('prompt');
+
+  // Prompt for generating alt text.
+  $form['prompt'] = [
+    '#type' => 'textarea',
+    '#title' => t('OpenAI Alt text generation prompt'),
+    '#default_value' => $prompt,
+    '#description' => t('Prompt used for generating the alt text.'),
+    '#required' => TRUE,
+    '#rows' => 15,
+    '#cols' => 80,
+    '#attributes' => [
+      'style' => 'white-space: pre-wrap;',
+    ],
+  ];
+
+  // Load all image styles in Backdrop CMS.
+  $image_styles = image_styles();
+  $image_styles_options = [];
+
+  foreach ($image_styles as $name => $image_style) {
+    $image_styles_options[$name] = $image_style['label'];
+  }
+
+  // Define the form element for selecting an image style.
+  $form['image_style'] = [
+    '#title' => t('Image style'),
+    '#type' => 'select',
+    '#options' => $image_styles_options,
+    '#default_value' => config_get('your_module.settings', 'image_style') ?? 'ai_image_alt_text',
+    '#empty_option' => t('Original (NOT RECOMMENDED)'),
+    '#description' => t('Image style to use before sending the image to reduce resolution and reformat as PNG.'),
+  ];
+
+  // Model selection.
+  $models = $api->filterModels(['gpt-4o|gpt-4-turbo|vision']);
+
+  $form['model'] = [
+    '#type' => 'select',
+    '#title' => t('Model to use'),
+    '#options' => $models,
+    '#default_value' => $config->get('model'),
+    '#required' => TRUE,
+    '#description' => t('AI model to use for generating the alt text.'),
+  ];
+
+  // Autogenerate option.
+  $form['autogenerate'] = [
+    '#title' => t('Autogenerate on upload'),
+    '#type' => 'checkbox',
+    '#default_value' => $config->get('autogenerate') ?? FALSE,
+    '#description' => t('Automatically generate alt text when uploading an image.'),
+  ];
+
+  // Hide button option.
+  $form['hide_button'] = [
+    '#title' => t('Hide button'),
+    '#type' => 'checkbox',
+    '#default_value' => $config->get('hide_button') ?? FALSE,
+    '#description' => t('Hide the button to generate alt text manually.'),
+    '#states' => [
+      'enabled' => [
+        ':input[name="autogenerate"]' => ['checked' => TRUE], // Disable when autogenerate is unchecked.
+      ],
+    ],
+  ];
+
+  // Add a form validation handler.
+  $form['#validate'][] = 'openai_alt_settings_form_validate';
+
+  return system_settings_form($form);
+}
+
+/**
+ * Form validation callback.
+ */
+function openai_alt_settings_form_validate($form, &$form_state) {
+  $autogenerate = $form_state['values']['autogenerate'] ?? FALSE;
+  $hide_button = $form_state['values']['hide_button'] ?? FALSE;
+
+  if (!$autogenerate && $hide_button) {
+    form_set_error('hide_button', t('The "Hide button" option cannot be enabled unless "Autogenerate on upload" is checked.'));
+  }
+}
+
+/**
  * Implements hook_element_info_alter().
  *
  * Alter the image field widget to include a "Generate Alt Text" button.
  */
-function openai_alt_element_info_alter(&$types)
-{
+function openai_alt_element_info_alter(&$types) {
   if (isset($types['managed_file'])) {
     $types['managed_file']['#process'][] = 'openai_alt_image_field_process';
   }
@@ -15,35 +171,58 @@ function openai_alt_element_info_alter(&$types)
 /**
  * Process function to wrap the alt text field and add the AI button.
  */
-function openai_alt_image_field_process($element, &$form_state, $form)
-{
+function openai_alt_image_field_process($element, &$form_state, $form) {
   if (isset($element['#value']['alt'])) {
     $field_name = $element['#field_name'] ?? 'unknown_field';
     $delta = $element['#delta'] ?? 0;
-    //dpm($element);
-    $original_prefix = $element['#prefix'] ?? ''; // Preserve the original prefix.
     $wrapper_id = 'ai-alt-field-wrapper-' . $field_name . '-' . $delta;
+    // Wrap the alt text field.
+    $element['#prefix'] = '<div id="' . $wrapper_id . '" class="ai-alt-field-wrapper">';
+    $element['#suffix'] = '</div>';
 
-    // Add your custom wrapper while preserving the original prefix.
-    $element['#prefix'] = $original_prefix . '<div id="' . $wrapper_id . '" class="ai-alt-field-wrapper">';
-    $element['#suffix'] = '</div>' . ($element['#suffix'] ?? ''); // Ensure the original suffix is preserved.
-    //dpm($element);
-    // Add the "Generate Alt Text" button.
-    $element['ai_alt_text_generation'] = [
-      '#type' => 'button',
-      '#value' => t('Generate Alt Text'),
-      '#ajax' => [
-        'callback' => 'openai_alt_generate_alt_text_ajax',
-        'wrapper' => $wrapper_id, // Use your custom wrapper for updates.
-      ],
-      '#attributes' => [
-        'class' => ['ai-alt-text-generation', 'button--primary'],
-        'data-file-id' => $element['#value']['fid'] ?? NULL,
-        'data-field-name' => $field_name,
-        'data-delta' => $delta,
-      ],
-      '#weight' => -1.5, // Ensure the button appears after the alt field.
-    ];
+    // Retrieve settings.
+    $hide_button = config_get('openai_alt.settings', 'hide_button');
+    $autogenerate = config_get('openai_alt.settings', 'autogenerate');
+
+    // Debug: Check if the setting is retrieved correctly.
+    watchdog('openai_alt', 'Autogenerate setting: @autogenerate', ['@autogenerate' => $autogenerate]);
+
+    // Add the "Generate Alt Text" button only if it's not hidden.
+    if (empty($hide_button)) {
+      $element['ai_alt_text_generation'] = [
+        '#type' => 'button',
+        '#value' => t('Generate Alt Text'),
+        '#ajax' => [
+          'callback' => 'openai_alt_generate_alt_text_ajax',
+          'wrapper' => $wrapper_id,
+        ],
+        '#attributes' => [
+          'class' => ['ai-alt-text-generation', 'button--primary'],
+          'data-file-id' => $element['#value']['fid'] ?? NULL,
+          'data-field-name' => $field_name,
+          'data-delta' => $delta,
+        ],
+        '#weight' => -1.5,
+      ];
+    }
+
+    // If autogenerate is enabled, attach JavaScript.
+    if (!empty($autogenerate)) {
+      watchdog('openai_alt', 'Attaching autogenerate JavaScript.', []);
+
+      $element['#attached']['js'][] = [
+        'data' => [
+          'openaiAlt' => [
+            'fid' => $element['#value']['fid'] ?? NULL,
+            'field_name' => $field_name,
+            'delta' => $delta,
+            'wrapper_id' => $wrapper_id,
+          ],
+        ],
+        'type' => 'setting',
+      ];
+      $element['#attached']['js'][] = backdrop_get_path('module', 'openai_alt') . '/js/openai_alt_autogenerate.js';
+    }
   }
 
   return $element;
@@ -52,8 +231,7 @@ function openai_alt_image_field_process($element, &$form_state, $form)
 /**
  * Implements hook_form_alter().
  */
-function openai_alt_form_alter(&$form, &$form_state, $form_id)
-{
+function openai_alt_form_alter(&$form, &$form_state, $form_id) {
   if ($form_id == 'filter_format_editor_image_form') {
     // Add weights for existing fields.
     if (isset($form['image'])) {
@@ -78,29 +256,70 @@ function openai_alt_form_alter(&$form, &$form_state, $form_id)
       $form['actions']['submit']['#weight'] = 8; // Submit button.
     }
 
-    // Ensure the 'alt' field exists before adding the Generate with AI button.
+    // Ensure the 'alt' field exists.
     if (isset($form['alt'])) {
-      // Add a unique ID to the `alt` field for AJAX targeting.
+      // Add a unique ID to the alt field for AJAX targeting.
       $form['alt']['#prefix'] = '<div id="edit-alt-wrapper">';
       $form['alt']['#suffix'] = '</div>';
 
-      // Add the "Generate with AI" button directly after the 'alt' field.
-      $form['generate_with_ai'] = [
-        '#type' => 'button',
-        '#value' => t('Generate with AI'),
-        '#ajax' => [
-          'callback' => 'openai_alt_generate_alt_text_for_ckeditor',
-          'wrapper' => 'edit-alt-wrapper', // Target only the `alt` field wrapper.
-        ],
-        '#attributes' => [
-          'class' => ['ckeditor-ai-generate-button'],
-        ],
-        '#weight' => 3, // Place the button right after the alt field.
-      ];
+      // Retrieve the module settings to check if the button should be hidden.
+      $hide_button = config_get('openai_alt.settings', 'hide_button');
+      $autogenerate = config_get('openai_alt.settings', 'autogenerate');
+
+      // Add the "Generate Alt Text" button only if it's not hidden.
+      if (empty($hide_button)) {
+        $form['generate_with_ai'] = [
+          '#type'       => 'button',
+          '#value'      => t('Generate Alt Text'),
+          '#ajax'       => [
+            'callback' => 'openai_alt_generate_alt_text_for_ckeditor',
+            'wrapper'  => 'edit-alt-wrapper',
+          ],
+          '#attributes' => [
+            'class' => ['ckeditor-ai-generate-button'],
+          ],
+          '#weight'     => 3, // Place the button right after the alt field.
+        ];
+      }
+
+      // If autogenerate is enabled, attach JS to trigger after image upload/selection.
+      if (!empty($autogenerate)) {
+        watchdog('openai_alt', 'Attaching autogenerate JavaScript for CKEditor.', []);
+
+        $uploaded_fid = $form_state['values']['fid'] ?? NULL;
+
+        if ($uploaded_fid) {
+          watchdog('openai_alt', 'Detected uploaded image with fid: @fid', ['@fid' => $uploaded_fid]);
+
+          // Pass FID to JS settings.
+          $form['#attached']['js'][] = [
+            'data' => [
+              'openaiAlt' => [
+                'fid' => $uploaded_fid,
+                'wrapper_id' => 'edit-alt-wrapper',
+              ],
+            ],
+            'type' => 'setting',
+          ];
+        } else {
+          watchdog('openai_alt', 'No uploaded image detected, waiting for selection.', []);
+
+          $form['#attached']['js'][] = [
+            'data' => [
+              'openaiAlt' => [
+                'wrapper_id' => 'edit-alt-wrapper',
+              ],
+            ],
+            'type' => 'setting',
+          ];
+        }
+
+        // Always attach the JS file to ensure it loads.
+        $form['#attached']['js'][] = backdrop_get_path('module', 'openai_alt') . '/js/openai_alt_autogenerate_ckeditor.js';
+      }
     }
   }
 }
-
 
 /**
  * AJAX callback to generate alt text in CKEditor modal.
@@ -171,20 +390,77 @@ function openai_alt_generate_alt_text_for_ckeditor($form, &$form_state)
   ];
 }
 
+function openai_alt_generate_alt_text_for_ckeditor_autogenerate() {
+  $fid = $_POST['fid'] ?? NULL;
+  $src = $_POST['src'] ?? NULL;
+
+  if (!$fid && !$src) {
+    watchdog('openai_alt', 'No file ID (fid) or source (src) provided.', [], WATCHDOG_WARNING);
+    backdrop_json_output(['status' => 'error', 'message' => 'No image provided.']);
+    return;
+  }
+
+  // Load the file if fid is provided.
+  if ($fid) {
+    $file = file_load($fid);
+    if (!$file) {
+      watchdog('openai_alt', 'Failed to load file with fid: @fid', ['@fid' => $fid], WATCHDOG_WARNING);
+      backdrop_json_output(['status' => 'error', 'message' => 'Failed to load image file.']);
+      return;
+    }
+
+    $file_uri = $file->uri;
+
+    // Load image style from settings.
+    $style_name = config_get('openai_alt.settings', 'image_style') ?? 'ai_image_alt_text';
+    $styled_uri = image_style_path($style_name, $file_uri);
+
+    // Generate the derivative if it doesn't exist.
+    $style = image_style_load($style_name);
+    if ($style && !file_exists($styled_uri)) {
+      watchdog('openai_alt', "⚠️ Derivative missing, generating: @styled_uri", ['@styled_uri' => $styled_uri]);
+
+      image_style_create_derivative($style, $file_uri, $styled_uri);
+      sleep(1); // Allow time for file generation.
+
+      if (!file_exists($styled_uri)) {
+        watchdog('openai_alt', "❌ Derivative still missing after generation attempt.", []);
+      }
+    }
+
+    // Use the derivative if it exists, otherwise fallback to the original.
+    $final_image_uri = file_exists($styled_uri) ? $styled_uri : $file_uri;
+  }
+  else {
+    // For images selected from the library via src.
+    $final_image_uri = $src;
+  }
+
+  // Send the image to OpenAI for alt text generation.
+  try {
+    $openai_api = openai_alt_get_openai_api();
+    $generated_alt_text = $openai_api->describeImage(file_create_url($final_image_uri));
+
+    if (!empty($generated_alt_text)) {
+      backdrop_json_output(['status' => 'success', 'alt_text' => $generated_alt_text]);
+    } else {
+      backdrop_json_output(['status' => 'error', 'message' => 'Failed to generate alt text.']);
+    }
+  }
+  catch (Exception $e) {
+    watchdog('openai_alt', 'Error generating alt text: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
+    backdrop_json_output(['status' => 'error', 'message' => 'An error occurred while generating alt text.']);
+  }
+}
+
 /**
  * AJAX callback for generating alt text using OpenAI.
  */
-/**
- * AJAX callback for generating alt text using OpenAI.
- */
-function openai_alt_generate_alt_text_ajax($form, &$form_state)
-{
+function openai_alt_generate_alt_text_ajax($form, &$form_state) {
   $triggering_element = $form_state['triggering_element'];
   $fid = $triggering_element['#attributes']['data-file-id'] ?? NULL;
   $field_name = $triggering_element['#attributes']['data-field-name'] ?? NULL;
   $delta = $triggering_element['#attributes']['data-delta'] ?? NULL;
-
-  //dpm($triggering_element);
 
   if ($field_name === NULL || $delta === NULL) {
     backdrop_set_message(t('Unable to determine field context.'), 'error');
@@ -196,27 +472,59 @@ function openai_alt_generate_alt_text_ajax($form, &$form_state)
     ];
   }
 
-  $file = file_load($fid); // Load the file entity using Backdrop's file_load().
+  // Load the file entity.
+  $file = file_load($fid);
   if (!$file) {
     backdrop_set_message(t('File not found for the given file ID.'), 'error');
     return;
   }
 
-  // dpm($file);
+  // Load the selected image style from settings.
+  $style_name = config_get('openai_alt.settings', 'image_style') ?? 'ai_image_alt_text';
 
-  $file_uri = $file->uri;
+  // Generate the styled image path.
+  $styled_uri = image_style_path($style_name, $file->uri);
 
-  //dpm($file_uri);
+  // Ensure the derivative exists or generate it.
+  $style = image_style_load($style_name);
+  if ($style && !file_exists($styled_uri)) {
+    watchdog('openai_alt', "⚠️ Derivative missing, generating: @styled_uri", ['@styled_uri' => $styled_uri]);
 
-  // Generate alt text using OpenAI API.
-  //$generated_alt_text = 'Generated alt text'; // Replace with OpenAI API logic.
+    // Generate the derivative image.
+    image_style_create_derivative($style, $file->uri, $styled_uri);
 
-  // Get the OpenAIApi instance and describe the image.
+    // Wait a short time to allow file generation.
+    sleep(1);
+
+    // Check again if the derivative exists.
+    if (!file_exists($styled_uri)) {
+      watchdog('openai_alt', "❌ Derivative still missing after generation attempt.", []);
+    }
+  }
+
+  // Use the derivative if it exists, otherwise fallback to the original.
+  $file_uri = file_exists($styled_uri) ? $styled_uri : $file->uri;
+
+  watchdog('openai_alt', '🖼️ Sending image to OpenAI: @uri', ['@uri' => $file_uri]);
+
+  // Send the image to OpenAI for alt text generation.
   $openai_api = openai_alt_get_openai_api();
   $generated_alt_text = $openai_api->describeImage($file_uri);
-  //dpm($generated_alt_text);
 
-  // Update the alt text value.
+  // Log the generated alt text.
+  watchdog('openai_alt', '📝 Generated Alt Text: @text', ['@text' => $generated_alt_text]);
+
+  if (!$generated_alt_text) {
+    backdrop_set_message(t('Failed to generate alt text. Please try again.'), 'error');
+    return [
+      '#type' => 'ajax',
+      '#commands' => [
+        ajax_command_alert(t('An error occurred while generating alt text. Please try again.')),
+      ],
+    ];
+  }
+
+  // Update the alt text field.
   $form[$field_name]['und'][$delta]['alt']['#value'] = $generated_alt_text;
 
   // Return the updated field.
@@ -229,6 +537,75 @@ function openai_alt_generate_alt_text_ajax($form, &$form_state)
   ];
 }
 
+/**
+ * Handles AJAX requests to generate alt text.
+ */
+function openai_alt_generate_alt_text_callback() {
+  watchdog('openai_alt', '🔥 Autogenerate triggered.');
+
+  // Get POST data
+  $fid = $_POST['fid'] ?? NULL;
+  $field_name = $_POST['field_name'] ?? NULL;
+  $delta = $_POST['delta'] ?? NULL;
+
+  // Log received data
+  watchdog('openai_alt', '📩 Data received - fid: @fid, field: @field, delta: @delta', [
+    '@fid' => $fid,
+    '@field' => $field_name,
+    '@delta' => $delta,
+  ]);
+
+  if (!$fid || !$field_name || $delta === NULL) {
+    watchdog('openai_alt', '❌ Missing parameters in AJAX request.');
+    return ['status' => 'error', 'message' => 'Invalid request.'];
+  }
+
+  // Load the file
+  $file = file_load($fid);
+  if (!$file) {
+    watchdog('openai_alt', '❌ File not found.');
+    return ['status' => 'error', 'message' => 'File not found.'];
+  }
+
+  // Load the selected image style from settings
+  $style_name = config_get('openai_alt.settings', 'image_style') ?? 'ai_image_alt_text';
+
+  // Get the styled image path
+  $styled_uri = image_style_path($style_name, $file->uri);
+
+  // Ensure the derivative exists
+  if (!file_exists($styled_uri)) {
+    watchdog('openai_alt', "⚠️ Derivative missing, generating: @styled_uri", ['@styled_uri' => $styled_uri]);
+
+    // Generate the derivative
+    $style = image_style_load($style_name);
+    if ($style) {
+      image_style_create_derivative($style, $file->uri, $styled_uri);
+    } else {
+      watchdog('openai_alt', "❌ Failed to load image style: @style", ['@style' => $style_name]);
+    }
+  }
+
+  // Use the derivative if it exists, otherwise fallback to original
+  $image_uri_to_send = file_exists($styled_uri) ? $styled_uri : $file->uri;
+  // Send image to OpenAI for description
+  $openai_api = openai_alt_get_openai_api();
+  $generated_alt_text = $openai_api->describeImage($image_uri_to_send);
+
+  // Log generated alt text
+  watchdog('openai_alt', '📝 Generated Alt Text: @text', ['@text' => $generated_alt_text]);
+
+  if (!$generated_alt_text) {
+    return ['status' => 'error', 'message' => 'Alt text generation failed.'];
+  }
+
+  return [
+    'status' => 'success',
+    'alt_text' => $generated_alt_text,
+    'wrapper_id' => "ai-alt-field-wrapper-{$field_name}-{$delta}",
+  ];
+}
+
 
 /**
  * Get an OpenAI API instance.
@@ -236,8 +613,7 @@ function openai_alt_generate_alt_text_ajax($form, &$form_state)
  * @return OpenAIApi
  *   The OpenAI API instance.
  */
-function openai_alt_get_openai_api()
-{
+function openai_alt_get_openai_api() {
   static $openai_api;
   if (!$openai_api) {
     $api_key = key_get_key_value(config('openai.settings')->get('api_key'));

@@ -1,9 +1,9 @@
 <?php return array(
     'root' => array(
         'name' => 'backdrop/openai',
-        'pretty_version' => 'dev-master',
-        'version' => 'dev-master',
-        'reference' => '270293306b399ffce3188e21c89d435402f5e3a0',
+        'pretty_version' => 'dev-1.x-1.x',
+        'version' => 'dev-1.x-1.x',
+        'reference' => '9dee09dfabccbcc8614e45c92e1099b9b8278e47',
         'type' => 'project',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -11,9 +11,9 @@
     ),
     'versions' => array(
         'backdrop/openai' => array(
-            'pretty_version' => 'dev-master',
-            'version' => 'dev-master',
-            'reference' => '270293306b399ffce3188e21c89d435402f5e3a0',
+            'pretty_version' => 'dev-1.x-1.x',
+            'version' => 'dev-1.x-1.x',
+            'reference' => '9dee09dfabccbcc8614e45c92e1099b9b8278e47',
             'type' => 'project',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),
@@ -185,9 +185,9 @@
             'dev_requirement' => false,
         ),
         'symfony/http-client' => array(
-            'pretty_version' => 'v6.4.16',
-            'version' => '6.4.16.0',
-            'reference' => '60a113666fa67e598abace38e5f46a0954d8833d',
+            'pretty_version' => 'v6.4.18',
+            'version' => '6.4.18.0',
+            'reference' => '394b440934056b8d9d6ba250001458e9d7998b7f',
             'type' => 'library',
             'install_path' => __DIR__ . '/../symfony/http-client',
             'aliases' => array(),

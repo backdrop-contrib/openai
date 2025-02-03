@@ -1,0 +1,57 @@
+<?php
+
+/**
+ * Implements hook_install().
+ */
+function openai_alt_install() {
+  // Ensure the required module is enabled.
+  if (!module_exists('image_effects_coloractions')) {
+    module_enable(['image_effects_coloractions']);
+  }
+
+  // Check if the image style already exists.
+  if (!image_style_load('ai_image_alt_text')) {
+    // Define the image style.
+    $style = [
+      'name' => 'ai_image_alt_text',
+      'label' => 'AI Image Alt Text',
+      'effects' => [],
+    ];
+
+    // Add the scaling effect.
+    $style['effects'][] = [
+      'name' => 'image_scale',
+      'data' => [
+        'width' => 200,
+        'height' => 200,
+        'upscale' => FALSE,
+      ],
+      'weight' => 1,
+    ];
+
+    // Check if the module is available before adding the convert effect.
+    if (module_exists('image_effects_coloractions')) {
+      $style['effects'][] = [
+        'name' => 'coloractions_convert', // Correct effect name
+        'data' => [
+          'format' => 'image/png',
+          'quality' => '75',
+        ],
+        'weight' => 2,
+      ];
+    }
+
+    // Save the image style.
+    image_style_save($style);
+  }
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function openai_alt_uninstall() {
+  // Delete the image style on module uninstall.
+  if (image_style_load('ai_image_alt_text')) {
+    image_style_delete('ai_image_alt_text');
+  }
+}

@@ -7,13 +7,3 @@ configure = admin/config/openai/openai-alt
 dependencies[] = openai
 dpendencies[] = image_effects
 dependencies[] = image_effects_coloractions
-
-; Added by Backdrop CMS packaging script on 2025-01-12
-project = openai
-version = 1.x-1.0.2
-timestamp = 1736733485
-
-; Added by Backdrop CMS packaging script on 2025-03-01
-project = openai
-version = 1.x-1.0.5
-timestamp = 1740862846

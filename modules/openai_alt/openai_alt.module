@@ -101,7 +101,7 @@ function openai_alt_settings_form(array $form, array &$form_state) {
     '#title' => t('Image style'),
     '#type' => 'select',
     '#options' => $image_styles_options,
-    '#default_value' => config_get('your_module.settings', 'image_style') ?? 'ai_image_alt_text',
+    '#default_value' => $config->get('image_style') ?? 'ai_image_alt_text',
     '#empty_option' => t('Original (NOT RECOMMENDED)'),
     '#description' => t('Image style to use before sending the image to reduce resolution and reformat as PNG.'),
   ];
@@ -323,8 +323,7 @@ function openai_alt_form_alter(&$form, &$form_state, $form_id) {
 /**
  * AJAX callback to generate alt text in CKEditor modal.
  */
-function openai_alt_generate_alt_text_for_ckeditor($form, &$form_state)
-{
+function openai_alt_generate_alt_text_for_ckeditor($form, &$form_state) {
   // Retrieve the file ID (`fid`) from the form.
   $fid = $form['image']['fid']['#value']['fid'] ?? NULL;
 
@@ -347,13 +346,29 @@ function openai_alt_generate_alt_text_for_ckeditor($form, &$form_state)
     return;
   }
 
-  // Get the file URI.
+  // Get the file URI and check the file extension.
   $file_uri = $file->uri;
+  $extension = strtolower(pathinfo($file_uri, PATHINFO_EXTENSION));
+
+  // If the image is an SVG, convert it before sending to OpenAI.
+  if ($extension === 'svg') {
+    $converted_uri = openai_alt_convert_svg_to_png($file_uri);
+    if (!$converted_uri) {
+      watchdog('openai_alt', '❌ SVG conversion failed.');
+      return [
+        '#type' => 'ajax',
+        '#commands' => [
+          ajax_command_alert(t('Failed to process SVG file for alt text generation.')),
+        ],
+      ];
+    }
+    $file_uri = $converted_uri; // Use the converted PNG
+  }
 
   try {
     // Use the OpenAI API to generate alt text for the image.
     $openai_api = openai_alt_get_openai_api();
-    $generated_alt_text = $openai_api->describeImage($file_uri);
+    $generated_alt_text = $openai_api->describeImage(file_create_url($file_uri));
 
     if (!empty($generated_alt_text)) {
       // Update the `alt` field's value with the generated alt text.
@@ -409,16 +424,27 @@ function openai_alt_generate_alt_text_for_ckeditor_autogenerate() {
     }
 
     $file_uri = $file->uri;
+    $extension = strtolower(pathinfo($file_uri, PATHINFO_EXTENSION));
+
+    // **If the image is an SVG, convert it to PNG before applying an image style**
+    if ($extension === 'svg') {
+      $converted_uri = openai_alt_convert_svg_to_png($file_uri);
+      if (!$converted_uri) {
+        watchdog('openai_alt', '❌ SVG conversion failed.');
+        backdrop_json_output(['status' => 'error', 'message' => 'Failed to process SVG file.']);
+        return;
+      }
+      $file_uri = $converted_uri; // **Use the converted PNG**
+    }
 
     // Load image style from settings.
     $style_name = config_get('openai_alt.settings', 'image_style') ?? 'ai_image_alt_text';
     $styled_uri = image_style_path($style_name, $file_uri);
 
-    // Generate the derivative if it doesn't exist.
+    // **Generate the derivative if it doesn't exist**
     $style = image_style_load($style_name);
     if ($style && !file_exists($styled_uri)) {
       watchdog('openai_alt', "⚠️ Derivative missing, generating: @styled_uri", ['@styled_uri' => $styled_uri]);
-
       image_style_create_derivative($style, $file_uri, $styled_uri);
       sleep(1); // Allow time for file generation.
 
@@ -427,7 +453,7 @@ function openai_alt_generate_alt_text_for_ckeditor_autogenerate() {
       }
     }
 
-    // Use the derivative if it exists, otherwise fallback to the original.
+    // **Use the derivative if it exists, otherwise fallback to the original/converted PNG**
     $final_image_uri = file_exists($styled_uri) ? $styled_uri : $file_uri;
   }
   else {
@@ -435,7 +461,7 @@ function openai_alt_generate_alt_text_for_ckeditor_autogenerate() {
     $final_image_uri = $src;
   }
 
-  // Send the image to OpenAI for alt text generation.
+  // **Send the image to OpenAI for alt text generation**
   try {
     $openai_api = openai_alt_get_openai_api();
     $generated_alt_text = $openai_api->describeImage(file_create_url($final_image_uri));
@@ -460,6 +486,14 @@ function openai_alt_generate_alt_text_ajax($form, &$form_state) {
   $fid = $triggering_element['#attributes']['data-file-id'] ?? NULL;
   $field_name = $triggering_element['#attributes']['data-field-name'] ?? NULL;
   $delta = $triggering_element['#attributes']['data-delta'] ?? NULL;
+
+  // 🛠 Debug Log: Capture the values received in AJAX
+  watchdog('openai_alt', '🚀 AJAX Request Triggered!');
+  watchdog('openai_alt', '🔍 Received Data: File ID: @fid, Field Name: @field_name, Field ID: @field_id', [
+    '@fid' => $fid ?? 'NULL',
+    '@field_name' => $field_name ?? 'NULL',
+    '@field_id' => $field_id ?? 'NULL',
+  ]);
 
   if ($field_name === NULL || $delta === NULL) {
     backdrop_set_message(t('Unable to determine field context.'), 'error');
@@ -531,59 +565,44 @@ function openai_alt_generate_alt_text_ajax($form, &$form_state) {
  * Handles AJAX requests to generate alt text.
  */
 function openai_alt_generate_alt_text_callback() {
-  //watchdog('openai_alt', '🔥 Autogenerate triggered.');
-
-  // Get POST data
   $fid = $_POST['fid'] ?? NULL;
   $field_name = $_POST['field_name'] ?? NULL;
   $delta = $_POST['delta'] ?? NULL;
 
-  // Log received data
-  /*watchdog('openai_alt', '📩 Data received - fid: @fid, field: @field, delta: @delta', [
-    '@fid' => $fid,
-    '@field' => $field_name,
-    '@delta' => $delta,
-  ]);*/
-
   if (!$fid || !$field_name || $delta === NULL) {
-    //('openai_alt', '❌ Missing parameters in AJAX request.');
+    watchdog('openai_alt', '❌ Missing parameters in AJAX request.');
     return ['status' => 'error', 'message' => 'Invalid request.'];
   }
 
   // Load the file
   $file = file_load($fid);
   if (!$file) {
-    watchdog('openai_alt', '❌ File not found.');
+    watchdog('openai_alt', '❌ File not found for fid: ' . $fid);
     return ['status' => 'error', 'message' => 'File not found.'];
   }
 
-  // Load the selected image style from settings
-  $style_name = config_get('openai_alt.settings', 'image_style') ?? 'ai_image_alt_text';
+  // Get the file URI
+  $file_uri = $file->uri;
 
-  // Get the styled image path
-  $styled_uri = image_style_path($style_name, $file->uri);
+  // Identify file type
+  $extension = strtolower(pathinfo($file_uri, PATHINFO_EXTENSION));
+  watchdog('openai_alt', "🖼️ Detected file extension: {$extension}");
 
-  // Ensure the derivative exists
-  if (!file_exists($styled_uri)) {
-    watchdog('openai_alt', "⚠️ Derivative missing, generating: @styled_uri", ['@styled_uri' => $styled_uri]);
-
-    // Generate the derivative
-    $style = image_style_load($style_name);
-    if ($style) {
-      image_style_create_derivative($style, $file->uri, $styled_uri);
-    } else {
-      watchdog('openai_alt', "❌ Failed to load image style: @style", ['@style' => $style_name]);
+  // If the image is an SVG, convert it before sending to OpenAI
+  if ($extension === 'svg') {
+    $converted_uri = openai_alt_convert_svg_to_png($file_uri);
+    if (!$converted_uri) {
+      watchdog('openai_alt', '❌ Failed to convert SVG to PNG.');
+      return ['status' => 'error', 'message' => 'Failed to process SVG file.'];
     }
+    $image_uri_to_send = $converted_uri;
+  } else {
+    $image_uri_to_send = $file_uri;
   }
 
-  // Use the derivative if it exists, otherwise fallback to original
-  $image_uri_to_send = file_exists($styled_uri) ? $styled_uri : $file->uri;
-  // Send image to OpenAI for description
+  // Send image to OpenAI for alt text generation
   $openai_api = openai_alt_get_openai_api();
-  $generated_alt_text = $openai_api->describeImage($image_uri_to_send);
-
-  // Log generated alt text
-  watchdog('openai_alt', '📝 Generated Alt Text: @text', ['@text' => $generated_alt_text]);
+  $generated_alt_text = $openai_api->describeImage(file_create_url($image_uri_to_send));
 
   if (!$generated_alt_text) {
     return ['status' => 'error', 'message' => 'Alt text generation failed.'];
@@ -595,7 +614,43 @@ function openai_alt_generate_alt_text_callback() {
     'wrapper_id' => "ai-alt-field-wrapper-{$field_name}-{$delta}",
   ];
 }
+function openai_alt_convert_svg_to_png($svg_uri) {
+  // Check if the file is in a local storage scheme (public:// or private://)
+  if (file_stream_wrapper_valid_scheme(file_uri_scheme($svg_uri))) {
+    $svg_real_path = backdrop_realpath($svg_uri);
+  } else {
+    $svg_real_path = $svg_uri; // Assume direct file path (like S3 URL)
+  }
 
+  // Ensure the resolved path exists for local files
+  if (!$svg_real_path || (!file_exists($svg_real_path) && file_uri_scheme($svg_uri) !== 's3')) {
+    watchdog('openai_alt', '❌ Could not resolve real path or file does not exist: ' . $svg_uri);
+    return FALSE;
+  }
+
+  // Define the output file path (same directory as SVG)
+  $output_uri = str_replace('.svg', '.png', $svg_real_path);
+
+  // Ensure ImageMagick is available
+  if (!shell_exec('which convert')) {
+    watchdog('openai_alt', '❌ ImageMagick `convert` command not found.');
+    return FALSE;
+  }
+
+  // Convert the SVG to PNG
+  $command = escapeshellcmd("convert " . escapeshellarg($svg_real_path) . " PNG32:" . escapeshellarg($output_uri));
+  watchdog('openai_alt', "🛠 Running command: $command");
+  shell_exec($command);
+
+  // Ensure the PNG file was created
+  if (!file_exists($output_uri)) {
+    watchdog('openai_alt', '❌ Failed to convert SVG to PNG: ' . $output_uri);
+    return FALSE;
+  }
+
+  watchdog('openai_alt', '✅ Successfully converted SVG to PNG: ' . $output_uri);
+  return $output_uri;
+}
 
 /**
  * Get an OpenAI API instance.

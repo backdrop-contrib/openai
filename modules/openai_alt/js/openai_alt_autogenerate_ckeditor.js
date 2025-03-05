@@ -62,7 +62,7 @@ $(document).ready(function () {
 });
 
 function triggerAutoGenerate(fid, src, wrapperId) {
-  /*$.ajax({
+  $.ajax({
     url: Backdrop.settings.basePath + 'openai-alt/ckeditor-autogenerate',
     type: 'POST',
     data: {
@@ -81,5 +81,5 @@ function triggerAutoGenerate(fid, src, wrapperId) {
     error: function (xhr, status, error) {
       console.error("❌ AJAX request failed:", status, error);
     }
-  });*/
+  });
 }

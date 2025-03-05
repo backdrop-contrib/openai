@@ -4,10 +4,14 @@
      * Ensure the correct alt field is wrapped properly.
      */
     function wrapAltTextFields() {
-      $("input[name^='field_image'][name$='[alt]']").each(function () {
+      $("input[name$='[alt]']").each(function () {
         var $altField = $(this).closest(".form-item");
+
+        //console.log("🛠 Wrapping ALT field:", $altField); // Debugging
+
         if (!$altField.parent().hasClass("ai-alt-field-wrapper")) {
           $altField.wrap('<div class="ai-alt-field-wrapper"></div>');
+          //console.log("✅ Wrapped:", $altField);
         }
       });
     }

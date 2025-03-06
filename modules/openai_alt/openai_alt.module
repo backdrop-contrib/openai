@@ -171,55 +171,107 @@ function openai_alt_element_info_alter(&$types) {
 /**
  * Process function to wrap the alt text field and add the AI button.
  */
+/**
+ * Process callback to inject alt-text generation logic into managed_file fields.
+ *
+ * @param array $element
+ *   The form element array.
+ * @param array $form_state
+ *   The current state of the form.
+ * @param array $form
+ *   The entire form structure.
+ *
+ * @return array
+ *   The modified form element.
+ */
+/**
+ * Process callback to inject alt-text generation logic into managed_file fields.
+ */
+/**
+ * Implements hook_element_info_alter() or hook_form_alter() process callback
+ * to inject OpenAI Alt Text functionality into a managed_file field element.
+ */
 function openai_alt_image_field_process($element, &$form_state, $form) {
-  if (isset($element['#value']['alt'])) {
-    $field_name = $element['#field_name'] ?? 'unknown_field';
-    $delta = $element['#delta'] ?? 0;
+  // 1) Define defaults early to avoid "Undefined variable" notices.
+  $delta = 0;
+  $field_name = 'unknown_field';
 
-    // Retrieve settings.
-    $hide_button = config_get('openai_alt.settings', 'hide_button');
-    $autogenerate = config_get('openai_alt.settings', 'autogenerate');
+  // 2) If #value or #value['alt'] is missing, there's no alt text to process. Bail out early.
+  if (empty($element['#value']) || !isset($element['#value']['alt'])) {
+    return $element;
+  }
 
-    // Debug: Check if the setting is retrieved correctly.
-    //watchdog('openai_alt', 'Autogenerate setting: @autogenerate',
-    // ['@autogenerate' => $autogenerate]);
-
-    // Add the "Generate Alt Text" button only if it's not hidden.
-    if (empty($hide_button) && !isset($element['ai_alt_text_generation'])) {
-      $element['ai_alt_text_generation'] = [
-        '#type' => 'button',
-        '#value' => t('Generate Alt Text'),
-        '#ajax' => [
-          'callback' => 'openai_alt_generate_alt_text_ajax',
-          'wrapper' => $element['#id'], // Target the existing alt field.
-        ],
-        '#attributes' => [
-          'class' => ['ai-alt-text-generation', 'button--primary'],
-          'data-file-id' => $element['#value']['fid'] ?? NULL,
-          'data-field-name' => $field_name,
-          'data-delta' => $delta,
-        ],
-        '#weight' => 1,
-      ];
+  // 3) Parse the real delta from #parents if possible (in multi-value fields).
+  if (!empty($element['#parents'])) {
+    $last_parent = end($element['#parents']);
+    if (is_numeric($last_parent)) {
+      $delta = (int) $last_parent;
     }
+    // Reset pointer (to avoid side effects if other code reads #parents next).
+    reset($element['#parents']);
+  }
 
-    // If autogenerate is enabled, attach JavaScript.
-    if (!empty($autogenerate)) {
-      //watchdog('openai_alt', 'Attaching autogenerate JavaScript.', []);
+  // 4) If the element has a field_name, overwrite the default.
+  if (!empty($element['#field_name'])) {
+    $field_name = $element['#field_name'];
+  }
 
-      $element['#attached']['js'][] = [
-        'data' => [
-          'openaiAlt' => [
-            'fid' => $element['#value']['fid'] ?? NULL,
+  // 5) Optionally, you can append "--delta-X" to ensure the wrapper #id is unique per item.
+  if (!empty($element['#id'])) {
+    $element['#id'] .= '--delta-' . $delta;
+  }
+
+  // 6) Retrieve current alt text, to decide if we want to auto-generate or not.
+  $current_alt = trim($element['#value']['alt']);
+
+  // 7) Fetch your module's configuration settings (as needed).
+  $hide_button   = config_get('openai_alt.settings', 'hide_button');
+  $autogenerate  = config_get('openai_alt.settings', 'autogenerate');
+
+  // 8) Add a "Generate Alt Text" button (Ajax) if not hidden.
+  //    This gives the user a manual way to generate or re-generate alt text.
+  if (empty($hide_button) && !isset($element['ai_alt_text_generation'])) {
+    $element['ai_alt_text_generation'] = [
+      '#type' => 'button',
+      '#value' => t('Generate Alt Text'),
+      '#ajax' => [
+        'callback' => 'openai_alt_generate_alt_text_ajax',
+        // Re-render only this element (including the alt <input>) on success:
+        'wrapper' => $element['#id'],
+      ],
+      '#attributes' => [
+        'class' => ['ai-alt-text-generation', 'button--primary'],
+        // Pass data into the button so your JS or callback knows which item is clicked.
+        'data-file-id'    => isset($element['#value']['fid']) ? $element['#value']['fid'] : NULL,
+        'data-field-name' => $field_name,
+        'data-delta'      => $delta,
+      ],
+      '#weight' => 1,
+    ];
+  }
+
+  // 9) If autogenerate is enabled AND alt is currently empty, attach JS to auto-generate alt text.
+  if (!empty($autogenerate) && $current_alt === '') {
+    // Use a unique subkey so multiple images in the same form don't overwrite each other.
+    $unique_key = $field_name . ':' . $delta;
+
+    // This merges into Backdrop.settings.openaiAlt[...] in your JavaScript.
+    $element['#attached']['js'][] = [
+      'data' => [
+        'openaiAlt' => [
+          $unique_key => [
+            'fid'        => isset($element['#value']['fid']) ? $element['#value']['fid'] : NULL,
             'field_name' => $field_name,
-            'delta' => $delta,
-            'target_id' => $element['#id'], // Use existing field ID for targeting.
+            'delta'      => $delta,
+            'target_id'  => $element['#id'],
           ],
         ],
-        'type' => 'setting',
-      ];
-      $element['#attached']['js'][] = backdrop_get_path('module', 'openai_alt') . '/js/openai_alt_autogenerate.js';
-    }
+      ],
+      'type' => 'setting',
+    ];
+
+    // Also attach the JS file that reads these settings and triggers AJAX calls.
+    $element['#attached']['js'][] = backdrop_get_path('module', 'openai_alt') . '/js/openai_alt_autogenerate.js';
   }
 
   return $element;

@@ -7,3 +7,8 @@ configure = admin/devel/generate/content-gpt
 dependencies[] = openai
 dependencies[] = devel
 dependencies[] = devel_generate
+
+; Added by Backdrop CMS packaging script on 2025-06-20
+project = openai
+version = 1.x-1.0.6
+timestamp = 1750432105

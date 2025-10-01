@@ -6,6 +6,18 @@
 function openai_requirements($phase) {
   $requirements = [];
 
+  // Check PHP version requirement for both install and runtime phases.
+  if ($phase == 'install' || $phase == 'runtime') {
+    if (version_compare(PHP_VERSION, '8.2.0', '<')) {
+      $requirements['openai_php'] = [
+        'title' => t('OpenAI PHP Version'),
+        'value' => PHP_VERSION,
+        'severity' => REQUIREMENT_ERROR,
+        'description' => t('OpenAI module requires PHP 8.2.0 or higher. Your current version is @version. Please upgrade PHP before installing this module.', ['@version' => PHP_VERSION]),
+      ];
+    }
+  }
+
   if ($phase == 'runtime') {
     // Check if the Key module is enabled.
     if (!module_exists('key')) {

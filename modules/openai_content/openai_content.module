@@ -72,6 +72,26 @@ function openai_content_settings_form($form, &$form_state) {
     '#description' => t('Allows analyzing the text for policy violations.'),
   ];
 
+  // Text analysis settings section
+  $form['features']['text_analysis_settings'] = [
+    '#type' => 'fieldset',
+    '#title' => t('Text Analysis Settings'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  ];
+
+  // Get available moderation models
+  // Use multiple prefixes since moderation models start with different prefixes
+  $moderation_models = $api->filterModels(['omni-moderation', 'text-moderation']);
+
+  $form['features']['text_analysis_settings']['text_analysis_model'] = [
+    '#type' => 'select',
+    '#title' => t('Moderation Model'),
+    '#options' => $moderation_models,
+    '#default_value' => $config->get('text_analysis_model') ?? 'omni-moderation-latest',
+    '#description' => t('Select the OpenAI moderation model to use for text analysis.'),
+  ];
+
   $form['features']['tone_adjustment'] = [
     '#type' => 'checkbox',
     '#title' => t('Enable Tone Adjustment'),
@@ -719,6 +739,7 @@ function openai_content_entity_suggest_taxonomy($form, &$form_state) {
  */
 function openai_content_entity_analyze_content($form, &$form_state) {
   $openai_config = config('openai.settings');
+  $content_config = config('openai_content.settings');
   $apiKey = key_get_key_value($openai_config->get('api_key'));
 
   if (isset($form_state['values']['target_field'])) {
@@ -731,8 +752,11 @@ function openai_content_entity_analyze_content($form, &$form_state) {
         $client = new OpenAIApi($apiKey);
         $truncated_value = StringHelper::prepareText($target_field_value, [], 8000);
 
+        // Get the configured moderation model
+        $model = $content_config->get('text_analysis_model') ?? 'omni-moderation-latest';
+
         try {
-          $result = $client->moderation($truncated_value);
+          $result = $client->moderation($truncated_value, $model);
 
           // Check if the response contains flagged content
           $flagged = (bool) $result["results"][0]["flagged"];

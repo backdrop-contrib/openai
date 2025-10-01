@@ -22,11 +22,21 @@ function openai_chatgpt_menu() {
   $items['admin/config/openai/chatgpt'] = [
     'title'            => 'OpenAi ChatGPT explorer',
     'description'      => 'Contains a form where you can experiment and test the OpenAI ChatGPT endpoint.',
-    'page callback'    => 'drupal_get_form',
+    'page callback'    => 'backdrop_get_form',
     'page arguments'   => ['openai_chatgpt_form'],
     'access callback'  => 'user_access',
     'access arguments' => ['access openai chatgpt'],
     'weight' => -8,
+  ];
+
+  $items['admin/config/openai/chatgpt/settings'] = [
+    'title' => 'ChatGPT Settings',
+    'description' => 'Configure settings for the OpenAI ChatGPT module.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['openai_chatgpt_settings_form'],
+    'access callback' => 'user_access',
+    'access arguments' => ['administer site configuration'],
+    'weight' => -7,
   ];
 
   return $items;
@@ -46,6 +56,10 @@ function openai_chatgpt_form($form, &$form_state) {
 
   $api = new OpenAIApi($apiKey);
 
+  // Dynamically fetch the minimum tokens for the default model.
+  $default_model = 'gpt-3.5-turbo';
+  $min_tokens = $api->getMinCapForModel($default_model);
+
   $form['text'] = [
     '#type' => 'textarea',
     '#title' => t('Ask ChatGPT'),
@@ -62,7 +76,15 @@ function openai_chatgpt_form($form, &$form_state) {
     '#collapsed' => TRUE,
   ];
 
-  $models = $api->filterModels(['gpt']);
+  // Get all GPT models but exclude image generation models
+  $all_gpt_models = $api->filterModels(['gpt']);
+  $models = [];
+  foreach ($all_gpt_models as $id => $model) {
+    // Exclude gpt-image models (these are for image generation, not chat)
+    if (!preg_match('/^gpt-image/i', $model)) {
+      $models[$id] = $model;
+    }
+  }
 
   $form['options']['model'] = [
     '#type' => 'select',
@@ -78,17 +100,17 @@ function openai_chatgpt_form($form, &$form_state) {
     '#min' => 0,
     '#max' => 2,
     '#step' => .1,
-    '#default_value' => '0.4',
+    '#default_value' => '1',
     '#description' => t('What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.'),
   ];
 
   $form['options']['max_tokens'] = [
     '#type' => 'number',
     '#title' => t('Max tokens'),
-    '#min' => 128,
+    '#min' => $min_tokens,
     '#step' => 1,
-    '#default_value' => '128',
-    '#description' => t('The maximum number of tokens to generate in the completion. The token count of your prompt plus max_tokens cannot exceed the model\'s context length.'),
+    '#default_value' => $min_tokens,
+    '#description' => t('The maximum number of tokens to generate in the completion. The token count of your prompt plus max_tokens cannot exceed the model\'s context length. The minimum value is dynamically set based on the selected model.'),
   ];
 
   $form['options']['system'] = [
@@ -97,6 +119,13 @@ function openai_chatgpt_form($form, &$form_state) {
     '#default_value' => 'You are a friendly helpful assistant inside of a Backdrop website. Be encouraging and polite and ask follow up questions of the user after giving the answer.',
     '#description' => t('The "profile" helps set the behavior of the ChatGPT response. You can change/influence how it response by adjusting the above instruction. If you want to change this value after starting a conversation, you will need to reload the form first.'),
     '#required' => TRUE,
+  ];
+
+  $form['options']['chatgpt_debug'] = [
+    '#type' => 'checkbox',
+    '#title' => t('Enable ChatGPT Debug Mode'),
+    '#default_value' => config_get('openai.settings', 'chatgpt_debug'),
+    '#description' => t('Enable debug mode to log additional information for troubleshooting.'),
   ];
 
   $form['response'] = [
@@ -136,26 +165,49 @@ function openai_chatgpt_form_validate($form, &$form_state) {
   $model = $form_state['values']['model'];
   $max_tokens = (int) $form_state['values']['max_tokens'];
 
-  switch ($model) {
-    case 'gpt-4':
-    case 'gpt-4-0314':
-      if ($max_tokens > 8192) {
-        form_set_error('options][max_tokens', t('The model you have selected only supports a maximum of 8192 tokens. Please reduce the max token value to 8192 or lower.'));
-      }
+  // Fetch the dynamic minimum tokens for the selected model.
+  $api = new OpenAIApi(config_get('openai.settings', 'api_key'));
+  $min_tokens = $api->getMinCapForModel($model);
+
+  // Define token limits for different model families dynamically.
+  $token_limits = [
+    'gpt-4' => 8192,
+    'gpt-4-32k' => 32768,
+    'gpt-4-turbo' => 128000,
+    'gpt-3.5-turbo' => 4096,
+    'gpt-3.5-turbo-16k' => 16384,
+    'gpt-5' => 200000,
+    'o1-preview' => 128000,
+  ];
+
+  // Check if we have a specific limit for this model.
+  $model_limit = NULL;
+  foreach ($token_limits as $model_prefix => $limit) {
+    if (strpos($model, $model_prefix) === 0) {
+      $model_limit = $limit;
       break;
-    case 'gpt-3.5-turbo':
-    case 'gpt-3.5-turbo-0301':
-      if ($max_tokens > 4096) {
-        form_set_error('options][max_tokens', t('The model you have selected only supports a maximum of 4096 tokens. Please reduce the max token value to 4096 or lower.'));
-      }
-      break;
-    case 'gpt-3.5-turbo-16k':
-      if ($max_tokens > 16384) {
-        form_set_error('options][max_tokens', t('The model you have selected only supports a maximum of 16384 tokens. Please reduce the max token value to 16384 or lower.'));
-      }
-      break;
-    default:
-      break;
+    }
+  }
+
+  // If no specific limit is found, use a safe default.
+  if ($model_limit === NULL) {
+    $model_limit = 128000; // Safe default for unknown models.
+  }
+
+  // Validate max tokens against the model limit.
+  if ($max_tokens > $model_limit) {
+    form_set_error('options][max_tokens', t('The model @model only supports a maximum of @limit tokens. Please reduce the max token value to @limit or lower.', [
+      '@model' => $model,
+      '@limit' => number_format($model_limit),
+    ]));
+  }
+
+  // Validate max tokens against the dynamic minimum tokens.
+  if ($max_tokens < $min_tokens) {
+    form_set_error('options][max_tokens', t('The model @model requires a minimum of @min tokens. Please increase the max token value to @min or higher.', [
+      '@model' => $model,
+      '@min' => number_format($min_tokens),
+    ]));
   }
 }
 
@@ -164,10 +216,37 @@ function openai_chatgpt_form_validate($form, &$form_state) {
  */
 function openai_chatgpt_get_response($form, &$form_state) {
   $errors = form_get_errors();
+  // Debug: Log the storage messages on AJAX callback, only if debug mode is enabled.
+  if (config_get('openai.settings', 'chatgpt_debug')) {
+    watchdog('openai_chatgpt', 'AJAX callback storage messages: @messages', [
+      '@messages' => var_export(isset($form_state['storage']['messages']) ? $form_state['storage']['messages'] : NULL, TRUE),
+    ], WATCHDOG_DEBUG);
+  }
   if (empty($errors)) {
-    $storage = $form_state['storage'];
-    $last_response = end($storage['messages']);
-    $form['response']['#value'] = trim($last_response['content']) ?? t('No answer was provided.');
+    // Check if we have messages in storage and get the last assistant response
+    if (!empty($form_state['storage']['messages'])) {
+      $messages = $form_state['storage']['messages'];
+      // Find the last assistant message
+      $last_response = '';
+      for ($i = count($messages) - 1; $i >= 0; $i--) {
+        if ($messages[$i]['role'] === 'assistant') {
+          $last_response = $messages[$i]['content'];
+          break;
+        }
+      }
+      $form['response']['#value'] = !empty($last_response) ? trim($last_response) : t('No answer was provided.');
+    }
+    else {
+      $form['response']['#value'] = t('No answer was provided.');
+    }
+  }
+  else {
+    // If there are form errors, display them
+    $error_messages = [];
+    foreach ($errors as $error) {
+      $error_messages[] = $error;
+    }
+    $form['response']['#value'] = t('Error: @errors', ['@errors' => implode('; ', $error_messages)]);
   }
   return $form['response'];
 }
@@ -203,11 +282,45 @@ function openai_chatgpt_form_submit($form, &$form_state) {
     ];
   }
 
-  $result = $api->chat($model, $messages, $temperature, $max_tokens);
-  $messages[] = ['role' => 'assistant', 'content' => $result];
-  $form_state['storage']['messages'] = $messages;
+  // Filter out assistant messages with empty content
+  $filtered_messages = [];
+  foreach ($messages as $msg) {
+    if ($msg['role'] === 'assistant' && trim($msg['content']) === '') {
+      continue;
+    }
+    $filtered_messages[] = $msg;
+  }
+
+  $result = $api->chat($model, $filtered_messages, $temperature, $max_tokens);
+  // Debug: Log the API result and messages
+  if ($openai_config->get('debug_logging')) {
+    watchdog('openai_chatgpt', 'API result: @result, Messages: @messages', [
+      '@result' => var_export($result, TRUE),
+      '@messages' => var_export($filtered_messages, TRUE),
+    ], WATCHDOG_DEBUG);
+  }
+
+  $filtered_messages[] = ['role' => 'assistant', 'content' => $result];
+  $form_state['storage']['messages'] = $filtered_messages;
   $form_state['rebuild'] = TRUE;
+
+  // Check if debugging is enabled.
+  $debug_enabled = $form_state['values']['chatgpt_debug'];
+  if ($debug_enabled) {
+    watchdog('openai_chatgpt', 'Debugging enabled: Form values: @values', ['@values' => var_export($form_state['values'], TRUE)], WATCHDOG_DEBUG);
+  }
 }
 
+/**
+ * Settings form for the OpenAI ChatGPT module.
+ */
+function openai_chatgpt_settings_form($form, &$form_state) {
+  $form['chatgpt_debug'] = [
+    '#type' => 'checkbox',
+    '#title' => t('Enable ChatGPT Debug Mode'),
+    '#default_value' => config_get('openai.settings', 'chatgpt_debug'),
+    '#description' => t('Enable debug mode to log additional information for troubleshooting.'),
+  ];
 
-
+  return system_settings_form($form);
+}

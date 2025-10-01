@@ -2,6 +2,12 @@ name = OpenAI
 description = A set of modules to enable OpenAI integration with Backdrop and augment the content experience with AI assisted tools.
 backdrop = 1.x
 type = module
+php = 8.2
 package = OpenAI
 configure = admin/config/openai/settings
 dependencies[] = key
+
+; Added by Backdrop CMS packaging script on 2025-06-20
+project = openai
+version = 1.x-1.0.6
+timestamp = 1750432105

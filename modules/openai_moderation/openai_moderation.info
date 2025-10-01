@@ -1,0 +1,8 @@
+name = OpenAI Moderation
+description = Provides an interface to test OpenAI content moderation with model selection.
+package = OpenAI
+type = module
+backdrop = 1.x
+dependencies[] = openai
+
+configure = admin/config/openai/moderation

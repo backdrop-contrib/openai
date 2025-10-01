@@ -1,0 +1,234 @@
+<?php
+
+/**
+ * @file
+ * Permissions and menu items for the OpenAI Moderation module.
+ */
+
+function openai_moderation_permission() {
+  return [
+    'access openai moderation' => [
+      'title' => t('Use OpenAI Moderation'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_menu().
+ */
+function openai_moderation_menu() {
+  $items = [];
+
+  $items['admin/config/openai/moderation'] = [
+    'title' => 'OpenAI Moderation',
+    'description' => 'Test OpenAI content moderation with different models.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['openai_moderation_form'],
+    'access callback' => 'user_access',
+    'access arguments' => ['access openai moderation'],
+    'weight' => -5,
+  ];
+
+  return $items;
+}
+
+/**
+ * Defines a form to test OpenAI content moderation.
+ */
+function openai_moderation_form($form, &$form_state) {
+  $config = config('openai.settings');
+  $apiKey = key_get_key_value($config->get('api_key'));
+
+  if (empty($apiKey)) {
+    form_set_error('', t('API key is not set. Please configure the API key in OpenAI settings.'));
+    return $form;
+  }
+
+  $api = new OpenAIApi($apiKey);
+
+  $form['text'] = array(
+    '#type' => 'textarea',
+    '#title' => t('Text to Moderate'),
+    '#description' => t('Enter the text you want to check for policy violations. OpenAI will analyze this content against their usage policies.'),
+    '#required' => TRUE,
+    '#rows' => 5,
+  );
+
+  // Get available moderation models
+  // Use multiple prefixes since moderation models start with different prefixes
+  $moderation_models = $api->filterModels(['omni-moderation', 'text-moderation']);
+
+  $form['model'] = array(
+    '#type' => 'select',
+    '#title' => t('Moderation Model'),
+    '#options' => $moderation_models,
+    '#default_value' => 'omni-moderation-latest',
+    '#description' => t('Select which OpenAI moderation model to use for analysis.'),
+  );
+
+  $form['response'] = [
+    '#prefix' => '<div id="openai-moderation-response">',
+    '#suffix' => '</div>',
+  ];
+
+  $form['actions'] = array('#type' => 'actions');
+  $form['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Check Content'),
+    '#ajax' => [
+      'callback' => 'openai_moderation_get_response',
+      'wrapper' => 'openai-moderation-response',
+      'progress' => [
+        'type' => 'throbber',
+      ],
+    ],
+  );
+
+  return $form;
+}
+
+/**
+ * AJAX callback for moderation form submission.
+ */
+function openai_moderation_get_response($form, &$form_state) {
+  $errors = form_get_errors();
+
+  if (empty($errors)) {
+    // Check if we have results in storage
+    if (!empty($form_state['storage']['moderation_result'])) {
+      $result = $form_state['storage']['moderation_result'];
+
+      $form['response']['#markup'] = theme('openai_moderation_result', ['result' => $result]);
+    } else {
+      $form['response']['#markup'] = t('No moderation result available.');
+    }
+  } else {
+    // Display form errors
+    $error_messages = [];
+    foreach ($errors as $error) {
+      $error_messages[] = $error;
+    }
+    $form['response']['#markup'] = t('Error: @errors', ['@errors' => implode('; ', $error_messages)]);
+  }
+
+  return $form['response'];
+}
+
+/**
+ * Form submission handler for the moderation form.
+ */
+function openai_moderation_form_submit($form, &$form_state) {
+  $config = config('openai.settings');
+  $apiKey = key_get_key_value($config->get('api_key'));
+
+  if (empty($apiKey)) {
+    form_set_error('', t('API key is not set. Please configure the API key in OpenAI settings.'));
+    return;
+  }
+
+  $text = $form_state['values']['text'];
+  $model = $form_state['values']['model'];
+
+  $api = new OpenAIApi($apiKey);
+
+  try {
+    $result = $api->moderation($text, $model);
+
+    // Store the result for the AJAX callback
+    $form_state['storage']['moderation_result'] = $result;
+    $form_state['rebuild'] = TRUE;
+
+  } catch (Exception $e) {
+    form_set_error('', t('Error during moderation: @message', ['@message' => $e->getMessage()]));
+  }
+}
+
+/**
+ * Implements hook_theme().
+ */
+function openai_moderation_theme() {
+  return [
+    'openai_moderation_result' => [
+      'variables' => ['result' => NULL],
+      'function' => 'theme_openai_moderation_result',
+    ],
+  ];
+}
+
+/**
+ * Theme function for moderation results.
+ */
+function theme_openai_moderation_result($variables) {
+  $result = $variables['result'];
+
+  if (empty($result) || !isset($result['results'])) {
+    return '<p>' . t('Invalid moderation result.') . '</p>';
+  }
+
+  $output = '<div class="openai-moderation-result">';
+  $output .= '<h3>' . t('Moderation Results') . '</h3>';
+
+  foreach ($result['results'] as $index => $moderation) {
+    $flagged = $moderation['flagged'] ?? FALSE;
+    $status_class = $flagged ? 'flagged' : 'safe';
+
+    $output .= '<div class="moderation-item ' . $status_class . '">';
+    $output .= '<h4>' . t('Overall Status: ') . '</h4>';
+    $output .= '<p class="status-' . $status_class . '">';
+    $output .= $flagged ?
+      '<strong style="color: red;">' . t('⚠ Content Flagged') . '</strong>' :
+      '<strong style="color: green;">' . t('✓ Content Safe') . '</strong>';
+    $output .= '</p>';
+
+    if (isset($moderation['categories'])) {
+      $output .= '<h4>' . t('Category Analysis:') . '</h4>';
+      $output .= '<ul class="moderation-categories">';
+
+      foreach ($moderation['categories'] as $category => $violated) {
+        $category_display = ucwords(str_replace(['_', '-'], ' ', $category));
+        $status_icon = $violated ? '❌' : '✅';
+        $status_text = $violated ? t('Violated') : t('Safe');
+
+        $output .= '<li>';
+        $output .= '<strong>' . $category_display . ':</strong> ';
+        $output .= $status_icon . ' ' . $status_text;
+        $output .= '</li>';
+      }
+
+      $output .= '</ul>';
+    }
+
+    if (isset($moderation['category_scores'])) {
+      $output .= '<h4>' . t('Confidence Scores:') . '</h4>';
+      $output .= '<ul class="moderation-scores">';
+
+      foreach ($moderation['category_scores'] as $category => $score) {
+        $category_display = ucwords(str_replace(['_', '-'], ' ', $category));
+        $percentage = is_numeric($score) ? round(floatval($score) * 100, 2) : 0.0;
+
+        $output .= '<li>';
+        $output .= '<strong>' . $category_display . ':</strong> ';
+        $output .= $percentage . '%';
+        $output .= '</li>';
+      }
+
+      $output .= '</ul>';
+    }
+
+    $output .= '</div>';
+  }
+
+  $output .= '</div>';
+
+  // Add some basic CSS
+  $output .= '<style>
+    .openai-moderation-result { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+    .moderation-item.flagged { border-left: 4px solid #d32f2f; background-color: #ffebee; }
+    .moderation-item.safe { border-left: 4px solid #388e3c; background-color: #e8f5e8; }
+    .moderation-categories li, .moderation-scores li { margin: 5px 0; }
+    .status-flagged { color: #d32f2f; }
+    .status-safe { color: #388e3c; }
+  </style>';
+
+  return $output;
+}

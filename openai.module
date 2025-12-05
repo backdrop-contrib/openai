@@ -28,35 +28,68 @@ function openai_autoload_info() {
  * Implements hook_init().
  */
 function openai_init() {
-  // Check if the current path is an admin path.
-  if (path_is_admin(current_path())) {
-    // Safely retrieve the API key configuration.
-    $api_key_config = config('openai.settings')->get('api_key');
+  // Only run on admin pages.
+  if (!path_is_admin(current_path())) {
+    return;
+  }
 
-    // Check if the Key module is enabled.
-    if (module_exists('key')) {
-      // Validate the API key if a configuration value exists.
-      $api_key = !empty($api_key_config) ? key_get_key_value($api_key_config) : NULL;
+  // If Key module isn't enabled, the module cannot work.
+  if (!module_exists('key')) {
+    $message = t('The Key module is not enabled. The OpenAI module requires the Key module to securely manage API keys. Please enable it from the <a href="@modules">modules page</a>.',
+      [
+        '@modules' => url('admin/modules'),
+      ]
+    );
+    backdrop_set_message($message, 'error');
+    return;
+  }
 
-      if (empty($api_key)) {
-        $message = t('You have not provided an OpenAI API key yet. This is required for its functionality to work. Please obtain an API key from <a href="@account" target="_blank">your OpenAI account</a> and add it to the <a href="@settings">OpenAI settings configuration here</a>.',
-          [
-            '@account' => 'https://platform.openai.com/',
-            '@settings' => url('admin/config/openai/settings'),
-          ]
-        );
-        backdrop_set_message($message, 'error');
+  // Check if any configured provider is working.
+  $config = config_get('openai.settings');
+  $providers_config = isset($config['providers']) ? $config['providers'] : [];
+
+  // Iterate through all enabled providers and see if any is working.
+  $any_working = FALSE;
+  $failed_providers = [];
+
+  if (!empty($providers_config) && is_array($providers_config)) {
+    foreach ($providers_config as $provider_id => $provider_cfg) {
+      // Skip providers that are not enabled.
+      if (empty($provider_cfg['enabled'])) {
+        continue;
+      }
+
+      try {
+        $api = openai_get_api($provider_id);
+        if ($api) {
+          $any_working = TRUE;
+          break;
+        }
+        else {
+          $failed_providers[] = $provider_id;
+        }
+      }
+      catch (Exception $e) {
+        $failed_providers[] = $provider_id;
       }
     }
-    else {
-      // Key module is not enabled, so the OpenAI module cannot work.
-      $message = t('The Key module is not enabled. The OpenAI module requires the Key module to securely manage API keys. Please enable it from the <a href="@modules">modules page</a>.',
-        [
-          '@modules' => url('admin/modules'),
-        ]
-      );
-      backdrop_set_message($message, 'error');
-    }
+  }
+
+  // If at least one provider is working, nothing to do.
+  if ($any_working) {
+    return;
+  }
+
+  // If providers are configured but none are working, show error.
+  if (!empty($failed_providers)) {
+    $provider_labels = array_map('openai_get_provider_label', $failed_providers);
+    $message = t('The following AI providers are enabled but could not be initialized: @providers. Verify that API keys are configured and valid on the <a href="@settings">OpenAI settings</a> page.',
+      [
+        '@providers' => implode(', ', $provider_labels),
+        '@settings' => url('admin/config/openai/settings'),
+      ]
+    );
+    backdrop_set_message($message, 'error');
   }
 }
 
@@ -118,7 +151,7 @@ function openai_admin_overview() {
     if ($path === 'admin/config/openai') {
       continue;
     }
-    
+
     // Skip operation paths (edit, delete, add with wildcards)
     // These should only appear as operations on their parent pages
     if (preg_match('/(\/edit|\/delete|\/add)$/', $path) || strpos($path, '%') !== FALSE) {
@@ -178,7 +211,7 @@ function openai_settings_form($form, &$form_state) {
     'description' => t('Access GPT-4, GPT-3.5, DALL-E, and other OpenAI models directly.'),
     'website' => 'https://platform.openai.com/',
   ];
-  
+
   // Sort all providers alphabetically by label
   uasort($all_providers, function($a, $b) {
     $label_a = isset($a['label']) ? (string)$a['label'] : '';
@@ -1118,13 +1151,13 @@ function openai_get_providers($include_builtin = FALSE) {
       $providers['openai'] = $builtin['openai'];
     }
   }
-  
+
   // Sort providers alphabetically by label
   uasort($providers, function($a, $b) {
     $label_a = isset($a['label']) ? (string)$a['label'] : '';
     $label_b = isset($b['label']) ? (string)$b['label'] : '';
     return strcasecmp($label_a, $label_b);
   });
-  
+
   return $providers;
 }

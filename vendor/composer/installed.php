@@ -3,7 +3,7 @@
         'name' => 'backdrop/openai',
         'pretty_version' => 'dev-1.x-2.x',
         'version' => 'dev-1.x-2.x',
-        'reference' => '4e2e3db2be6702e537c80b34da4a2e2ecc58932a',
+        'reference' => 'aa06834fd675db172ed3a2e984b0079817870746',
         'type' => 'project',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -13,7 +13,7 @@
         'backdrop/openai' => array(
             'pretty_version' => 'dev-1.x-2.x',
             'version' => 'dev-1.x-2.x',
-            'reference' => '4e2e3db2be6702e537c80b34da4a2e2ecc58932a',
+            'reference' => 'aa06834fd675db172ed3a2e984b0079817870746',
             'type' => 'project',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),

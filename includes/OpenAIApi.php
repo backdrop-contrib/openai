@@ -1,6 +1,22 @@
 <?php
 
-require_once BACKDROP_ROOT . '/' . backdrop_get_path('module', 'openai') . '/vendor/autoload.php';
+// Prefer Composer Manager's autoloader when available; fall back to module vendor.
+$__openai_sdk_source =& backdrop_static('openai_sdk_source');
+if (module_exists('composer_manager')) {
+  if (function_exists('composer_manager_register_autoloader')) {
+    composer_manager_register_autoloader();
+  }
+  $__openai_sdk_source = 'composer_manager';
+}
+else {
+  $autoload = BACKDROP_ROOT . '/' . backdrop_get_path('module', 'openai') . '/vendor/autoload.php';
+  if (file_exists($autoload)) {
+    require_once $autoload;
+    $__openai_sdk_source = 'module_vendor';
+  } else {
+    $__openai_sdk_source = $__openai_sdk_source ?: 'unknown';
+  }
+}
 
 use GuzzleHttp\Client as GuzzleClient;
 use OpenAI\Client as OpenAIClient;

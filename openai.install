@@ -7,40 +7,84 @@ function openai_requirements($phase) {
   $requirements = [];
 
   if ($phase == 'runtime') {
-    // Check if the Key module is enabled.
-    if (!module_exists('key')) {
-      $requirements['openai'] = [
-        'title' => t('OpenAI'),
-        'value' => t('Key module not enabled'),
-        'severity' => REQUIREMENT_ERROR,
-        'description' => t(
-          'The OpenAI module requires the Key module to securely manage the API key. Enable the Key module from the <a href="@modules">modules page</a>.',
-          ['@modules' => url('admin/modules')]
-        ),
-      ];
-    } else {
-      // Check if a valid key has been selected in the OpenAI settings.
-      $config = config_get('openai.settings');
-      $key_id = $config['api_key'];
+    // Create a default container entry.
+    $requirements['openai'] = [
+      'title' => t('OpenAI Integration'),
+    ];
 
-      if (!empty($key_id) && key_get_key($key_id)) {
-        $requirements['openai'] = [
-          'title' => t('OpenAI'),
-          'value' => t('API key detected and managed via Key module'),
-          'severity' => REQUIREMENT_OK,
-        ];
-      } else {
-        $requirements['openai'] = [
-          'title' => t('OpenAI'),
-          'value' => t('API key not configured'),
-          'severity' => REQUIREMENT_ERROR,
-          'description' => t(
-            'An API key is required for OpenAI functionality. Configure the key in the <a href="@settings">OpenAI settings</a>.',
-            ['@settings' => url('admin/config/openai/settings')]
-          ),
-        ];
+    $config = config_get('openai.settings');
+    $providers_config = isset($config['providers']) ? $config['providers'] : [];
+
+    // If Key module is not available, it's required for most use cases.
+    if (!module_exists('key')) {
+      $requirements['openai']['value'] = t('Key module not enabled');
+      $requirements['openai']['severity'] = REQUIREMENT_ERROR;
+      $requirements['openai']['description'] = t(
+        'The OpenAI module requires the Key module to securely manage API keys. Enable the Key module from the <a href="@modules">modules page</a>.',
+        ['@modules' => url('admin/modules')]
+      );
+      return $requirements;
+    }
+
+    // Check if any provider is enabled and working.
+    $working_providers = [];
+    $failed_providers = [];
+
+    if (!empty($providers_config) && is_array($providers_config)) {
+      foreach ($providers_config as $provider_id => $provider_cfg) {
+        // Skip providers that are not enabled.
+        if (empty($provider_cfg['enabled'])) {
+          continue;
+        }
+
+        // Try to get a working API instance for this provider.
+        try {
+          $api = openai_get_api($provider_id);
+          if ($api) {
+            $working_providers[] = $provider_id;
+          }
+          else {
+            $failed_providers[] = $provider_id;
+          }
+        }
+        catch (Exception $e) {
+          $failed_providers[] = $provider_id;
+        }
       }
     }
+
+    // If at least one provider is working, report OK.
+    if (!empty($working_providers)) {
+      $provider_labels = array_map('openai_get_provider_label', $working_providers);
+      $requirements['openai']['value'] = t('Providers configured and working: @providers', [
+        '@providers' => implode(', ', $provider_labels),
+      ]);
+      $requirements['openai']['severity'] = REQUIREMENT_OK;
+      return $requirements;
+    }
+
+    // If providers are configured but none are working, report ERROR.
+    if (!empty($failed_providers)) {
+      $provider_labels = array_map('openai_get_provider_label', $failed_providers);
+      $requirements['openai']['value'] = t('Provider configuration incomplete');
+      $requirements['openai']['severity'] = REQUIREMENT_ERROR;
+      $requirements['openai']['description'] = t(
+        'The following providers are enabled but could not be initialized: @providers. Verify that API keys are configured and valid on the <a href="@settings">OpenAI settings</a> page.',
+        [
+          '@providers' => implode(', ', $provider_labels),
+          '@settings' => url('admin/config/openai/settings'),
+        ]
+      );
+      return $requirements;
+    }
+
+    // No providers enabled: warn but don't error.
+    $requirements['openai']['value'] = t('No providers configured');
+    $requirements['openai']['severity'] = REQUIREMENT_WARNING;
+    $requirements['openai']['description'] = t(
+      'No AI providers are currently enabled. The OpenAI module can be installed without active providers; features requiring an API will remain disabled. Configure providers on the <a href="@settings">OpenAI settings</a> page.',
+      ['@settings' => url('admin/config/openai/settings')]
+    );
   }
 
   return $requirements;

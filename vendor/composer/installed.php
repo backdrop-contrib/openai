@@ -3,7 +3,7 @@
         'name' => 'backdrop/openai',
         'pretty_version' => 'dev-1.x-2.x',
         'version' => 'dev-1.x-2.x',
-        'reference' => 'aa06834fd675db172ed3a2e984b0079817870746',
+        'reference' => '5bb19998f013f6d9cbe2af742d972a58f262d9c0',
         'type' => 'project',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -13,7 +13,7 @@
         'backdrop/openai' => array(
             'pretty_version' => 'dev-1.x-2.x',
             'version' => 'dev-1.x-2.x',
-            'reference' => 'aa06834fd675db172ed3a2e984b0079817870746',
+            'reference' => '5bb19998f013f6d9cbe2af742d972a58f262d9c0',
             'type' => 'project',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),
@@ -121,8 +121,8 @@
         'psr/http-client-implementation' => array(
             'dev_requirement' => false,
             'provided' => array(
-                0 => '*',
-                1 => '1.0',
+                0 => '1.0',
+                1 => '*',
             ),
         ),
         'psr/http-factory' => array(
@@ -185,9 +185,9 @@
             'dev_requirement' => false,
         ),
         'symfony/http-client' => array(
-            'pretty_version' => 'v6.4.28',
-            'version' => '6.4.28.0',
-            'reference' => 'c9e69c185c4a845f9d46958cdb0dc7aa847f3981',
+            'pretty_version' => 'v6.4.31',
+            'version' => '6.4.31.0',
+            'reference' => 'f166fe476c996237666bcf7ec2cf827cd82ad573',
             'type' => 'library',
             'install_path' => __DIR__ . '/../symfony/http-client',
             'aliases' => array(),

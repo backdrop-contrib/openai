@@ -6,4 +6,3 @@ version = "1.0"
 
 ; This example module is intended as documentation and a copy-from template.
 ; To enable it as a real module, copy the folder to modules/contrib/openai_example_provider/ or similar.
-

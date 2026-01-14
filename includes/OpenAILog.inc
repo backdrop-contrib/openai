@@ -5,7 +5,7 @@
  * Entity class for OpenAI Log.
  */
 
-class OpenAILog extends Entity {
+class OpenAILog {
   public $id;
   public $timestamp;
   public $uid;
@@ -22,8 +22,10 @@ class OpenAILog extends Entity {
   /**
    * Constructor for OpenAILog.
    */
-  public function __construct(array $values = array()) {
-    parent::__construct($values, 'openai_log');
+  public function __construct(array $values = array(), $entity_type = NULL) {
+    foreach ($values as $key => $value) {
+      $this->$key = $value;
+    }
   }
 
   /**

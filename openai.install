@@ -1,6 +1,100 @@
 <?php
 
 /**
+ * Implements hook_schema().
+ */
+function openai_schema() {
+  $schema['openai_log'] = [
+    'description' => 'Stores logs of OpenAI API requests and responses.',
+    'fields' => [
+      'id' => [
+        'description' => 'The primary identifier for a log entry.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ],
+      'timestamp' => [
+        'description' => 'The Unix timestamp when the log entry was created.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ],
+      'uid' => [
+        'description' => 'The user ID who performed the operation.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ],
+      'module' => [
+        'description' => 'The module that initiated the request.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ],
+      'operation' => [
+        'description' => 'The operation being performed (e.g., chat, completions).',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ],
+      'model' => [
+        'description' => 'The model used for the request.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ],
+      'provider' => [
+        'description' => 'The provider used for the request.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ],
+      'request_data' => [
+        'description' => 'The data sent in the request (JSON).',
+        'type' => 'text',
+        'size' => 'big',
+      ],
+      'response_data' => [
+        'description' => 'The data received in the response (JSON).',
+        'type' => 'text',
+        'size' => 'big',
+      ],
+      'status' => [
+        'description' => 'The status of the request (1 for success, 0 for failure).',
+        'type' => 'int',
+        'size' => 'tiny',
+        'not null' => TRUE,
+        'default' => 0,
+      ],
+      'duration' => [
+        'description' => 'The duration of the request in seconds.',
+        'type' => 'float',
+        'size' => 'big',
+        'not null' => TRUE,
+        'default' => 0,
+      ],
+      'error_message' => [
+        'description' => 'The error message if the request failed.',
+        'type' => 'text',
+      ],
+    ],
+    'primary key' => ['id'],
+    'indexes' => [
+      'timestamp' => ['timestamp'],
+      'module' => ['module'],
+      'operation' => ['operation'],
+    ],
+  ];
+
+  return $schema;
+}
+
+/**
  * Implements hook_requirements().
  */
 function openai_requirements($phase) {
@@ -96,4 +190,14 @@ function openai_requirements($phase) {
 function openai_uninstall() {
   // Delete configuration on uninstall.
   config('openai.settings')->delete();
+}
+
+/**
+ * Add the openai_log table for API logging.
+ */
+function openai_update_1000() {
+  $schema = openai_schema();
+  if (!db_table_exists('openai_log')) {
+    db_create_table('openai_log', $schema['openai_log']);
+  }
 }

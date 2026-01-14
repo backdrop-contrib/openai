@@ -1,6 +1,14 @@
 <?php
 
 /**
+ * Load a single log entry.
+ */
+function openai_log_load($id) {
+  $log = entity_load('openai_log', array($id));
+  return $log ? reset($log) : FALSE;
+}
+
+/**
  * Implements hook_config_info().
  */
 function openai_config_info() {
@@ -20,8 +28,40 @@ function openai_autoload_info() {
     'AIClientInterface' => 'includes/AIClientInterface.php',
     'OpenAIApi'         => 'includes/OpenAIApi.php',
     'OpenAIAdapter'     => 'includes/OpenAIAdapter.php',
+    'OpenAILog'         => 'includes/OpenAILog.inc',
     'StringHelper'      => 'includes/StringHelper.php',
   ];
+}
+
+/**
+ * Implements hook_entity_info().
+ */
+function openai_entity_info() {
+  $info['openai_log'] = array(
+    'label' => t('OpenAI Log'),
+    'controller class' => 'DefaultEntityController',
+    'entity class' => 'OpenAILog',
+    'base table' => 'openai_log',
+    'entity keys' => array(
+      'id' => 'id',
+    ),
+    'module' => 'openai',
+  );
+
+  return $info;
+}
+
+/**
+ * Implements hook_cron().
+ */
+function openai_cron() {
+  $max_age = config_get('openai.settings', 'openai_log_max_age');
+  if ($max_age > 0) {
+    $cutoff = REQUEST_TIME - $max_age;
+    db_delete('openai_log')
+      ->condition('timestamp', $cutoff, '<')
+      ->execute();
+  }
 }
 
 /**
@@ -123,6 +163,23 @@ function openai_menu() {
     'weight' => -10,
   ];
 
+  $items['admin/reports/openai-logs'] = [
+    'title' => 'OpenAI Logs',
+    'description' => 'View detailed logs of AI API requests and responses.',
+    'page callback' => 'openai_log_list_page',
+    'access arguments' => ['administer site configuration'],
+    'file' => 'openai.logs.pages.inc',
+    'type' => MENU_NORMAL_ITEM,
+  ];
+
+  $items['admin/reports/openai-logs/%openai_log'] = [
+    'title' => 'AI Log entry',
+    'page callback' => 'openai_log_view_page',
+    'page arguments' => [3],
+    'access arguments' => ['administer site configuration'],
+    'file' => 'openai.logs.pages.inc',
+  ];
+
   return $items;
 }
 
@@ -202,6 +259,42 @@ function openai_settings_form($form, &$form_state) {
     '#description' => t('Select which AI providers to enable. You can enable multiple providers and use different models from each.'),
     '#collapsible' => FALSE,
     '#tree' => TRUE,
+  ];
+
+  $form['logging'] = [
+    '#type' => 'fieldset',
+    '#title' => t('API Logging'),
+    '#description' => t('Configure detailed logging of all AI API requests and responses.'),
+    '#collapsible' => TRUE,
+    '#collapsed' => FALSE,
+  ];
+
+  $form['logging']['openai_log_enabled'] = [
+    '#type' => 'checkbox',
+    '#title' => t('Enable API logging'),
+    '#default_value' => config_get('openai.settings', 'openai_log_enabled') ?? FALSE,
+    '#description' => t('If enabled, all API calls will be logged to the database for debugging and auditing purposes.'),
+  ];
+
+  $form['logging']['openai_log_max_age'] = [
+    '#type' => 'select',
+    '#title' => t('Discard logs older than'),
+    '#default_value' => config_get('openai.settings', 'openai_log_max_age') ?? 2592000,
+    '#options' => [
+      0 => t('Never'),
+      3600 => t('1 hour'),
+      86400 => t('1 day'),
+      604800 => t('1 week'),
+      2592000 => t('1 month'),
+      15552000 => t('6 months'),
+      31536000 => t('1 year'),
+    ],
+    '#description' => t('Older log entries will be automatically deleted during cron runs.'),
+    '#states' => [
+      'visible' => [
+        ':input[name="openai_log_enabled"]' => ['checked' => TRUE],
+      ],
+    ],
   ];
 
   // Build a combined list of all providers including OpenAI
@@ -546,6 +639,11 @@ function openai_settings_form_submit($form, &$form_state) {
 
   // Save providers config only (single source of truth)
   $config->set('providers', $providers_root);
+
+  // Save logging settings
+  $config->set('openai_log_enabled', (bool) $form_state['values']['openai_log_enabled']);
+  $config->set('openai_log_max_age', (int) $form_state['values']['openai_log_max_age']);
+
   $config->save();
 
   backdrop_set_message(t('Provider settings saved successfully.'));

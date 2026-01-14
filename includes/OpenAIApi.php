@@ -35,6 +35,59 @@ class OpenAIApi {
   protected $provider;
 
   /**
+   * Helper function to log API requests and responses.
+   */
+  protected function log($operation, $model, $request_data, $response_data, $status, $duration, $error_message = NULL) {
+    // Only log if enabled in settings.
+    if (!config_get('openai.settings', 'openai_log_enabled')) {
+      return;
+    }
+
+    try {
+      global $user;
+
+      // Determine which module called this. We try to find it from the backtrace.
+      $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 10);
+      $module = 'openai';
+      foreach ($backtrace as $step) {
+        if (isset($step['function']) && str_starts_with($step['function'], 'openai_')) {
+          // If it's a wrapper function in openai.module, keep looking for the caller.
+          if ($step['function'] === 'openai_chat' || $step['function'] === 'openai_moderation') {
+            continue;
+          }
+          // Extract module name from function name (e.g. openai_devel_generate_content -> openai_devel)
+          if (preg_match('/^(openai_[a-z0-9_]+?)_/', $step['function'], $matches)) {
+            $module = $matches[1];
+            break;
+          }
+        }
+      }
+
+      $log = [
+        'timestamp' => REQUEST_TIME,
+        'uid' => $user->uid,
+        'module' => $module,
+        'operation' => $operation,
+        'model' => $model,
+        'provider' => $this->provider,
+        'request_data' => is_string($request_data) ? $request_data : json_encode($request_data),
+        'response_data' => is_string($response_data) ? $response_data : json_encode($response_data),
+        'status' => $status ? 1 : 0,
+        'duration' => (float) $duration,
+        'error_message' => $error_message,
+      ];
+
+      db_insert('openai_log')
+        ->fields($log)
+        ->execute();
+    }
+    catch (\Exception $e) {
+      // Don't let logging failures break the main functionality.
+      watchdog('openai', 'Failed to log API request: @error', ['@error' => $e->getMessage()], WATCHDOG_DEBUG);
+    }
+  }
+
+  /**
    * Constructor.
    *
    * @param string $apiKey
@@ -388,22 +441,33 @@ class OpenAIApi {
    * @return string
    */
   public function chat(string $model, array $messages, $temperature, $max_tokens = 512, bool $stream_response = FALSE) {
+    $start_time = microtime(TRUE);
+    $params = [
+      'model' => $model,
+      'messages' => $messages,
+      'temperature' => floatval($temperature),
+      'max_tokens' => (int) $max_tokens,
+    ];
+
     // Delegate to provider if not OpenAI
     if ($this->provider !== 'openai' && method_exists($this->client, 'chat')) {
-      return $this->client->chat($model, $messages, $temperature, $max_tokens, $stream_response);
+      try {
+        $result = $this->client->chat($model, $messages, $temperature, $max_tokens, $stream_response);
+        $duration = microtime(TRUE) - $start_time;
+        $this->log('chat', $model, $params, $result, TRUE, $duration);
+        return $result;
+      }
+      catch (\Exception $e) {
+        $duration = microtime(TRUE) - $start_time;
+        $this->log('chat', $model, $params, NULL, FALSE, $duration, $e->getMessage());
+        throw $e;
+      }
     }
 
     // Original OpenAI implementation
     try {
       if ($stream_response) {
-        $stream = $this->client->chat()->createStreamed(
-          [
-            'model' => $model,
-            'messages' => $messages,
-            'temperature' => floatval($temperature),
-            'max_tokens' => (int) $max_tokens,
-          ]
-        );
+        $stream = $this->client->chat()->createStreamed($params);
 
         // Collect streamed chat deltas into a string and return it.
         $out = '';
@@ -417,22 +481,22 @@ class OpenAIApi {
           }
           $out .= $chunk;
         }
+        $duration = microtime(TRUE) - $start_time;
+        $this->log('chat', $model, $params, $out, TRUE, $duration);
         return $out;
       }
       else {
-        $response = $this->client->chat()->create(
-          [
-            'model' => $model,
-            'messages' => $messages,
-            'temperature' => floatval($temperature),
-            'max_tokens' => (int) $max_tokens,
-          ]
-        );
+        $response = $this->client->chat()->create($params);
 
         $result = $response->toArray();
-        return trim($result['choices'][0]['message']['content']);
+        $content = trim($result['choices'][0]['message']['content']);
+        $duration = microtime(TRUE) - $start_time;
+        $this->log('chat', $model, $params, $result, TRUE, $duration);
+        return $content;
       }
     } catch (\Exception $e) {
+      $duration = microtime(TRUE) - $start_time;
+      $this->log('chat', $model, $params, NULL, FALSE, $duration, $e->getMessage());
       watchdog('openai', 'There was an issue obtaining a response from OpenAI chat. The error was @error.', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
       return '';
     }

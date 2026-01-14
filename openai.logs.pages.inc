@@ -21,12 +21,24 @@ function openai_log_list_page() {
     array('data' => t('Operations')),
   );
 
+  // Add filters
+  $build['filter_form'] = backdrop_get_form('openai_log_filter_form');
+
   $query = db_select('openai_log', 'l')
     ->extend('PagerDefault')
     ->extend('TableSort');
   $query->fields('l');
   $query->limit(50);
   $query->orderByHeader($header);
+
+  // Apply filters
+  if (isset($_SESSION['openai_log_filter'])) {
+    foreach ($_SESSION['openai_log_filter'] as $field => $value) {
+      if ($value !== '') {
+        $query->condition($field, $value);
+      }
+    }
+  }
 
   $result = $query->execute();
 
@@ -59,9 +71,97 @@ function openai_log_list_page() {
 }
 
 /**
+ * Form builder: AI Logs filter form.
+ */
+function openai_log_filter_form($form, &$form_state) {
+  $form['filters'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Filters'),
+    '#collapsible' => TRUE,
+    '#collapsed' => empty($_SESSION['openai_log_filter']),
+  );
+
+  $options_module = db_query("SELECT DISTINCT module FROM {openai_log} ORDER BY module ASC")->fetchAllKeyed(0, 0);
+  $form['filters']['module'] = array(
+    '#type' => 'select',
+    '#title' => t('Module'),
+    '#options' => array('' => t('- Any -')) + $options_module,
+    '#default_value' => $_SESSION['openai_log_filter']['module'] ?? '',
+  );
+
+  $options_op = db_query("SELECT DISTINCT operation FROM {openai_log} ORDER BY operation ASC")->fetchAllKeyed(0, 0);
+  $form['filters']['operation'] = array(
+    '#type' => 'select',
+    '#title' => t('Operation'),
+    '#options' => array('' => t('- Any -')) + $options_op,
+    '#default_value' => $_SESSION['openai_log_filter']['operation'] ?? '',
+  );
+
+  $options_provider = db_query("SELECT DISTINCT provider FROM {openai_log} ORDER BY provider ASC")->fetchAllKeyed(0, 0);
+  $form['filters']['provider'] = array(
+    '#type' => 'select',
+    '#title' => t('Provider'),
+    '#options' => array('' => t('- Any -')) + $options_provider,
+    '#default_value' => $_SESSION['openai_log_filter']['provider'] ?? '',
+  );
+
+  $form['filters']['status'] = array(
+    '#type' => 'select',
+    '#title' => t('Status'),
+    '#options' => array(
+      '' => t('- Any -'),
+      1 => t('Success'),
+      0 => t('Failure'),
+    ),
+    '#default_value' => $_SESSION['openai_log_filter']['status'] ?? '',
+  );
+
+  $form['filters']['actions'] = array('#type' => 'actions');
+  $form['filters']['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Filter'),
+  );
+  if (!empty($_SESSION['openai_log_filter'])) {
+    $form['filters']['actions']['reset'] = array(
+      '#type' => 'submit',
+      '#value' => t('Reset'),
+    );
+  }
+
+  return $form;
+}
+
+/**
+ * Submit handler: AI Logs filter form.
+ */
+function openai_log_filter_form_submit($form, &$form_state) {
+  if ($form_state['values']['op'] == t('Reset')) {
+    unset($_SESSION['openai_log_filter']);
+  }
+  else {
+    $_SESSION['openai_log_filter'] = array(
+      'module' => $form_state['values']['module'],
+      'operation' => $form_state['values']['operation'],
+      'provider' => $form_state['values']['provider'],
+      'status' => $form_state['values']['status'],
+    );
+  }
+}
+
+/**
  * Page callback: View AI Log entry.
  */
 function openai_log_view_page($log) {
+  if (!$log) {
+    return MENU_NOT_FOUND;
+  }
+  // If only the ID was passed (fallback for old menu cache)
+  if (!is_object($log)) {
+    $log = openai_log_load($log);
+    if (!$log) {
+      return MENU_NOT_FOUND;
+    }
+  }
   backdrop_set_title(t('AI Log entry #@id', array('@id' => $log->id)));
 
   $rows = array(

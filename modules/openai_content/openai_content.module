@@ -39,10 +39,8 @@ function openai_content_menu() {
 function openai_content_settings_form($form, &$form_state) {
   // Get the configuration object to load values.
   $config = config('openai_content.settings');
-
   $openai_config = config('openai.settings');
   $providers_root = $openai_config->get('providers') ?: [];
-
   // Check if any provider is enabled
   $any_enabled = FALSE;
   foreach ($providers_root as $p => $cfg) {
@@ -58,52 +56,46 @@ function openai_content_settings_form($form, &$form_state) {
   }
 
   // Get chat models from all enabled providers
-  $chat_models_grouped = openai_get_all_chat_models();
-  
-  // Flatten grouped models since labels already include provider prefix
-  $chat_models = [];
-  foreach ($chat_models_grouped as $group_label => $group_items) {
-    if (is_array($group_items)) {
-      foreach ($group_items as $k => $v) {
-        $chat_models[$k] = $v;
-      }
-    }
-  }
-  
+  $chat_models = openai_get_all_chat_models();
+
   // Get moderation models from all enabled providers
-  $moderation_models_grouped = [];
-  foreach ($providers_root as $provider_id => $provider_config) {
-    if (!empty($provider_config['enabled'])) {
-      try {
-        $api = openai_get_api($provider_id);
-        if ($api && method_exists($api, 'getModerationModels')) {
-          $provider_label = openai_get_provider_label($provider_id);
-          $provider_models = $api->getModerationModels();
-          if (!empty($provider_models)) {
-            foreach ($provider_models as $model_id => $model_name) {
-              // Add provider prefix to moderation models too
-              $prefixed_label = $provider_label . ': ' . $model_name;
-              $moderation_models_grouped[$provider_label][$model_id] = $prefixed_label;
-            }
-          }
-        }
-      }
-      catch (Exception $e) {
-        watchdog('openai_content', 'Failed to fetch moderation models from @provider: @message', [
-          '@provider' => $provider_id,
-          '@message' => $e->getMessage(),
-        ], WATCHDOG_WARNING);
-      }
+  $moderation_models = openai_get_all_moderation_models();
+
+  // Determine default chat model.
+  $default_chat_model = 'openai/gpt-4o-mini';
+  $flat_chat_models = [];
+  foreach ($chat_models as $g_label => $g_items) {
+    if (is_array($g_items)) {
+      foreach ($g_items as $k => $v) { $flat_chat_models[$k] = $v; }
+    } else {
+      $flat_chat_models[$g_label] = $g_items;
     }
   }
-  
-  // Flatten moderation models
-  $moderation_models = [];
-  foreach ($moderation_models_grouped as $group_label => $group_items) {
-    if (is_array($group_items)) {
-      foreach ($group_items as $k => $v) {
-        $moderation_models[$k] = $v;
-      }
+  if (!empty($flat_chat_models) && !isset($flat_chat_models[$default_chat_model])) {
+    if (isset($flat_chat_models['gpt-3.5-turbo'])) {
+      $default_chat_model = 'gpt-3.5-turbo';
+    } else {
+      reset($flat_chat_models);
+      $default_chat_model = key($flat_chat_models);
+    }
+  }
+
+  // Determine default moderation model.
+  $default_mod_model = 'openai/omni-moderation-latest';
+  $flat_mod_models = [];
+  foreach ($moderation_models as $g_label => $g_items) {
+    if (is_array($g_items)) {
+      foreach ($g_items as $k => $v) { $flat_mod_models[$k] = $v; }
+    } else {
+      $flat_mod_models[$g_label] = $g_items;
+    }
+  }
+  if (!empty($flat_mod_models) && !isset($flat_mod_models[$default_mod_model])) {
+    if (isset($flat_mod_models['omni-moderation-latest'])) {
+      $default_mod_model = 'omni-moderation-latest';
+    } else {
+      reset($flat_mod_models);
+      $default_mod_model = key($flat_mod_models);
     }
   }
 
@@ -140,7 +132,7 @@ function openai_content_settings_form($form, &$form_state) {
     '#type' => 'select',
     '#title' => t('Model for Text Analysis'),
     '#options' => $moderation_models,
-    '#default_value' => $config->get('text_analysis_model') ?? 'omni-moderation-latest',
+    '#default_value' => $config->get('text_analysis_model') ?? $default_mod_model,
     '#description' => t('Select the moderation model to use for text analysis.'),
   ];
 
@@ -170,7 +162,7 @@ function openai_content_settings_form($form, &$form_state) {
     '#type' => 'select',
     '#title' => t('Model for Tone Adjustment'),
     '#options' => $chat_models,
-    '#default_value' => $config->get('tone_adjustment_model') ?? 'gpt-3.5-turbo',
+    '#default_value' => $config->get('tone_adjustment_model') ?? $default_chat_model,
     '#description' => t('Select the model to use for tone adjustment.'),
   ];
 
@@ -218,7 +210,7 @@ function openai_content_settings_form($form, &$form_state) {
     '#type' => 'select',
     '#title' => t('Model for Summarization'),
     '#options' => $chat_models,
-    '#default_value' => $config->get('summarization_model') ?? 'gpt-3.5-turbo',
+    '#default_value' => $config->get('summarization_model') ?? $default_chat_model,
     '#description' => t('Select the model to use for summarization.'),
   ];
 
@@ -776,7 +768,7 @@ function openai_content_entity_suggest_taxonomy($form, &$form_state) {
 function openai_content_entity_analyze_content($form, &$form_state) {
   $openai_config = config('openai.settings');
   $content_config = config('openai_content.settings');
-  
+
   // Get the configured moderation model
   $moderation_model = $content_config->get('text_analysis_model') ?? 'omni-moderation-latest';
 

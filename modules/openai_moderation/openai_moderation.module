@@ -63,41 +63,8 @@ function openai_moderation_form($form, &$form_state) {
     return $form;
   }
 
-  // Build provider label map from provider info hooks so we don't hardcode
-  // provider names. Providers implement hook_openai_provider_info().
-  $provider_names = [];
-  $providers_info = function_exists('openai_get_providers') ? openai_get_providers() : module_invoke_all('openai_provider_info');
-  if (!empty($providers_info) && is_array($providers_info)) {
-    foreach ($providers_info as $pid => $pinfo) {
-      if (!empty($pinfo['label'])) {
-        $provider_names[$pid] = $pinfo['label'];
-      }
-      elseif (!empty($pinfo['title'])) {
-        $provider_names[$pid] = $pinfo['title'];
-      }
-      else {
-        $provider_names[$pid] = ucfirst($pid);
-      }
-    }
-  }
-
   // Get moderation models from all enabled providers
-  $moderation_models = [];
-  foreach ($providers_root as $provider_id => $provider_config) {
-    if (!empty($provider_config['enabled'])) {
-      $api = openai_get_api($provider_id);
-      if ($api && method_exists($api, 'getModerationModels')) {
-        $provider_name = isset($provider_names[$provider_id]) ? $provider_names[$provider_id] : ucfirst($provider_id);
-        $provider_models = $api->getModerationModels();
-        foreach ($provider_models as $model_id => $model_name) {
-          // Use provider-prefixed keys so model selections are unambiguous
-          // and we can determine provider directly from the selected value.
-          $prefixed = $provider_id . '/' . $model_id;
-          $moderation_models[$prefixed] = $provider_name . ': ' . $model_name;
-        }
-      }
-    }
-  }
+  $moderation_models = openai_get_all_moderation_models();
 
   // If no moderation models are available, show a message
   if (empty($moderation_models)) {
@@ -115,14 +82,23 @@ function openai_moderation_form($form, &$form_state) {
   );
 
   // Set a default model value (prefer OpenAI's omni-moderation-latest if present).
-  $default_model = NULL;
-  if (isset($moderation_models['openai/omni-moderation-latest'])) {
-    $default_model = 'openai/omni-moderation-latest';
+  $default_model = 'openai/omni-moderation-latest';
+
+  // To check if default exists, we need to check both flat and grouped
+  $flat_check = [];
+  foreach ($moderation_models as $g_label => $g_items) {
+    if (is_array($g_items)) {
+      foreach ($g_items as $k => $v) { $flat_check[$k] = $v; }
+    } else {
+      $flat_check[$g_label] = $g_items;
+    }
   }
-  elseif (!empty($moderation_models)) {
-    // Take the first key from the associative array
-    reset($moderation_models);
-    $default_model = key($moderation_models);
+
+  if (!empty($flat_check)) {
+    if (!isset($flat_check[$default_model])) {
+      reset($flat_check);
+      $default_model = key($flat_check);
+    }
   }
 
   $form['model'] = array(

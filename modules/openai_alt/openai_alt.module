@@ -96,15 +96,46 @@ function openai_alt_settings_form(array $form, array &$form_state) {
     '#description' => t('Image style to use before sending the image to reduce resolution and reformat as PNG.'),
   ];
 
-  // Get all vision models from all enabled providers
-  $models_grouped = openai_get_all_vision_models();
+  // Get all vision models from all enabled providers.
+  $models = openai_get_all_vision_models();
 
-  // Flatten grouped models since labels already include provider prefix
-  $models = [];
-  foreach ($models_grouped as $group_label => $group_items) {
-    if (is_array($group_items)) {
-      foreach ($group_items as $k => $v) {
-        $models[$k] = $v;
+  $flat_models = [];
+  foreach ($models as $g_label => $g_items) {
+    if (is_array($g_items)) {
+      foreach ($g_items as $k => $v) { $flat_models[$k] = $v; }
+    } else {
+      $flat_models[$g_label] = $g_items;
+    }
+  }
+
+  // Preserve the selected model even if it's not in the vision list.
+  $current_model = $config->get('model');
+  if ($current_model && !isset($flat_models[$current_model])) {
+    // If current model isn't vision-capable, show all models so it can be selected/preserved.
+    $all_models = openai_get_all_models();
+    $flat_all_models = [];
+    foreach ($all_models as $g_label => $g_items) {
+      if (is_array($g_items)) {
+        foreach ($g_items as $k => $v) { $flat_all_models[$k] = $v; }
+      } else {
+        $flat_all_models[$g_label] = $g_items;
+      }
+    }
+
+    if (isset($flat_all_models[$current_model])) {
+      $models = $all_models;
+      $flat_models = $flat_all_models;
+    }
+    else {
+      // Check if the current model belongs to an enabled provider.
+      $parts = explode('/', $current_model);
+      $provider_id = $parts[0] ?? '';
+      $providers_root = config_get('openai.settings', 'providers') ?: [];
+      if (!empty($providers_root[$provider_id]['enabled'])) {
+        $provider_label = openai_get_provider_label($provider_id);
+        $models[$provider_label][$current_model] = $current_model . ' ' . t('(currently selected)');
+        // Update flat models too for consistency.
+        $flat_models[$current_model] = $current_model;
       }
     }
   }
@@ -113,16 +144,23 @@ function openai_alt_settings_form(array $form, array &$form_state) {
     // Build an HTML link safely and insert it as an unescaped placeholder so the
     // anchor tag is not double-escaped by t().
     $link = l(t('configure a provider'), 'admin/config/openai/settings');
-    backdrop_set_message(t('No vision models are available from your configured providers. Please !link in OpenAI settings.', ['!link' => $link]), 'warning');
+    backdrop_set_message(t('No suitable models are available from your configured providers. Please !link in OpenAI settings.', ['!link' => $link]), 'warning');
+  }
+
+  // Determine default model.
+  $default_model = 'openai/gpt-4o-mini';
+  if (!empty($flat_models) && !isset($flat_models[$default_model])) {
+    reset($flat_models);
+    $default_model = key($flat_models);
   }
 
   $form['model'] = [
     '#type' => 'select',
     '#title' => t('Model to use'),
     '#options' => $models,
-    '#default_value' => $config->get('model'),
+    '#default_value' => $config->get('model') ?: $default_model,
     '#required' => TRUE,
-    '#description' => t('AI model to use for generating the alt text.'),
+    '#description' => t('AI model to use for generating the alt text. If the desired model is not listed, ensure its provider is enabled in OpenAI settings.'),
   ];
 
   // Autogenerate option.
@@ -151,6 +189,7 @@ function openai_alt_settings_form(array $form, array &$form_state) {
 
   return system_settings_form($form);
 }
+
 
 /**
  * Form validation callback.

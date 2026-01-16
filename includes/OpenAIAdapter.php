@@ -308,7 +308,7 @@ class OpenAIAdapter implements AIClientInterface {
   /**
    * {@inheritdoc}
    */
-  public function embedding(string $input, string $model): array {
+  public function embedding(string $input, string $model, bool $log = TRUE): array {
     try {
       $response = $this->client->embeddings()->create([
         'model' => $model,

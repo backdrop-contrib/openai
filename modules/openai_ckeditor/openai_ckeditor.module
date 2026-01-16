@@ -111,23 +111,32 @@ function openai_ckeditor_form_alter(&$form, &$form_state, $form_id) {
     ];
 
     // Model selector: use openai module helper for all chat models from all providers.
-    $model_options_grouped = openai_get_all_chat_models();
-    
-    // Flatten grouped models since labels already include provider prefix
-    $model_options = [];
-    foreach ($model_options_grouped as $group_label => $group_items) {
-      if (is_array($group_items)) {
-        foreach ($group_items as $k => $v) {
-          $model_options[$k] = $v;
-        }
+    $model_options = openai_get_all_chat_models();
+
+    // Determine default.
+    $default_model = 'openai/gpt-4o-mini';
+    $flat_models = [];
+    foreach ($model_options as $g_label => $g_items) {
+      if (is_array($g_items)) {
+        foreach ($g_items as $k => $v) { $flat_models[$k] = $v; }
+      } else {
+        $flat_models[$g_label] = $g_items;
       }
     }
-    
+    if (!empty($flat_models) && !isset($flat_models[$default_model])) {
+      if (isset($flat_models['gpt-3.5-turbo'])) {
+        $default_model = 'gpt-3.5-turbo';
+      } else {
+        reset($flat_models);
+        $default_model = key($flat_models);
+      }
+    }
+
     $form['editor_settings']['plugins']['openai']['model'] = [
       '#type' => 'select',
       '#title' => t('Default model'),
       '#options' => $model_options,
-      '#default_value' => $openai_settings['model'] ?? 'gpt-3.5-turbo',
+      '#default_value' => $openai_settings['model'] ?? $default_model,
       '#description' => t('Select which model to use to analyze text. See the <a href="@url" target="_blank">model overview</a> for details about each model.', ['@url' => 'https://platform.openai.com/docs/models']),
     ];
 

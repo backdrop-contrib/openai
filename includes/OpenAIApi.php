@@ -147,17 +147,49 @@ class OpenAIApi {
       throw new \Exception("Provider class not found: $class");
     }
 
-    return new $class($apiKey, $this);
+    // Instantiate adapter using reflection so we can support adapters with
+    // different constructor signatures (some accept only $apiKey, others
+    // accept ($apiKey, $wrapper)). This avoids argument count mismatches.
+    try {
+      $ref = new \ReflectionClass($class);
+      $ctor = $ref->getConstructor();
+      if ($ctor) {
+        $param_count = $ctor->getNumberOfParameters();
+        if ($param_count >= 2) {
+          // Adapter wants the api key and the OpenAIApi wrapper.
+          return $ref->newInstance($apiKey, $this);
+        }
+        elseif ($param_count === 1) {
+          // Adapter only needs the api key.
+          return $ref->newInstance($apiKey);
+        }
+        else {
+          // No constructor args.
+          return $ref->newInstance();
+        }
+      }
+      else {
+        return $ref->newInstance();
+      }
+    }
+    catch (\Exception $e) {
+      throw new \Exception("Failed to instantiate provider adapter $class: " . $e->getMessage());
+    }
   }
 
   public function getModels(): array {
     // If using a provider adapter, delegate to it and ensure alphabetical order.
     if ($this->provider !== 'openai' && method_exists($this->client, 'getModels')) {
-      $models = $this->client->getModels();
-      if (is_array($models)) {
-        asort($models);
+      $start_time = microtime(TRUE);
+      try {
+        $models = $this->client->getModels();
+        if (is_array($models)) {
+          asort($models);
+        }
+        return $models;
+      } catch (\Exception $e) {
+        throw $e;
       }
-      return $models;
     }
 
     // Original OpenAI implementation
@@ -219,16 +251,6 @@ class OpenAIApi {
     return $models;
   }
 
-  /**
-   * Get chat/text models from the provider.
-   *
-   * NOTE: Only OpenAI provides reliable model capability metadata via their API.
-   * Other providers (Ollama, OpenRouter) use best-effort pattern matching.
-   * See individual adapter classes for capability detection strategies.
-   *
-   * @return array
-   *   Array of chat model IDs => names.
-   */
   public function getChatModels(): array {
     // If using a provider adapter that has getModelsByCapability, use it
     if ($this->provider !== 'openai' && method_exists($this->client, 'getModelsByCapability')) {
@@ -271,12 +293,15 @@ class OpenAIApi {
    */
   public function getModerationModels(): array {
     // If using a provider adapter that has getModerationModels, use it
-    if ($this->provider !== 'openai' && method_exists($this->client, 'getModerationModels')) {
-      $models = $this->client->getModerationModels();
-      if (is_array($models)) {
-        asort($models);
+    if ($this->provider !== 'openai') {
+      if (method_exists($this->client, 'getModerationModels')) {
+        $models = $this->client->getModerationModels();
+        if (is_array($models)) {
+          asort($models);
+        }
+        return $models;
       }
-      return $models;
+      return [];
     }
 
     // For OpenAI, return the known moderation models
@@ -324,20 +349,9 @@ class OpenAIApi {
     if (!empty($image_models)) {
       asort($image_models);
     }
-
     return $image_models;
   }
 
-  /**
-   * Get vision models (image input) from the provider.
-   *
-   * NOTE: Only OpenAI provides reliable capability metadata. Ollama and
-   * OpenRouter use pattern matching which may not catch all vision models.
-   * Use hook_openai_model_capabilities_alter() to add site-specific models.
-   *
-   * @return array
-   *   Array of vision model IDs => names.
-   */
   public function getVisionModels(): array {
     // If using a provider adapter that has getModelsByCapability, use it
     if ($this->provider !== 'openai' && method_exists($this->client, 'getModelsByCapability')) {
@@ -350,7 +364,9 @@ class OpenAIApi {
 
     // For OpenAI, filter by known vision model patterns
     // GPT-4o, GPT-4 Turbo, and vision-specific models support image input
-    return $this->filterModels(['gpt-4o', 'gpt-4-turbo', 'gpt-4-vision']);
+    $models = $this->filterModels(['gpt-4o', 'gpt-4-turbo', 'gpt-4-vision', 'o1-', 'o3-']);
+    asort($models);
+    return $models;
   }
 
   /**
@@ -373,15 +389,32 @@ class OpenAIApi {
    * @return string
    */
   public function completions(string $model, string $prompt, $temperature, $max_tokens = 512, bool $stream_response = FALSE) {
-    // Delegate to provider if not OpenAI
+    $start_time = microtime(TRUE);
+    $params = [
+      'model' => $model,
+      'prompt' => trim($prompt),
+      'temperature' => (float) $temperature,
+      'max_tokens' => (int) $max_tokens,
+    ];
+
+    // Delegate to provider if not OpenAI — wrap so we log adapter calls.
     if ($this->provider !== 'openai' && method_exists($this->client, 'completions')) {
-      return $this->client->completions($model, $prompt, $temperature, $max_tokens, $stream_response);
+      try {
+        $res = $this->client->completions($model, $prompt, $temperature, $max_tokens, $stream_response);
+        $duration = microtime(TRUE) - $start_time;
+        $this->log('completions', $model, $params, $res, TRUE, $duration);
+        return $res;
+      }
+      catch (\Exception $e) {
+        $duration = microtime(TRUE) - $start_time;
+        $this->log('completions', $model, $params, NULL, FALSE, $duration, $e->getMessage());
+        throw $e;
+      }
     }
 
-    // Original OpenAI implementation
     try {
       if ($stream_response) {
-        $stream = $this->client->completions()->createStreamed(
+        $stream = $this->client->completions()->create(
           [
             'model' => $model,
             'prompt' => trim($prompt),
@@ -404,6 +437,9 @@ class OpenAIApi {
           }
           $out .= $chunk;
         }
+        // Log streamed completion
+        $duration = microtime(TRUE) - $start_time;
+        $this->log('completions', $model, $params, $out, TRUE, $duration);
         return $out;
       } else {
         $response = $this->client->completions()->create(
@@ -416,9 +452,15 @@ class OpenAIApi {
         );
 
         $result = $response->toArray();
+        // Log completion
+        $duration = microtime(TRUE) - $start_time;
+        $this->log('completions', $model, $params, $result, TRUE, $duration);
         return trim($result['choices'][0]['text']);
       }
     } catch (\Exception $e) {
+      // Log failure
+      $duration = microtime(TRUE) - $start_time;
+      $this->log('completions', $model, $params, NULL, FALSE, $duration, $e->getMessage());
       watchdog('openai', 'There was an issue obtaining a response from OpenAI completions. The error was @error.', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
       return '';
     }
@@ -454,6 +496,7 @@ class OpenAIApi {
       try {
         $result = $this->client->chat($model, $messages, $temperature, $max_tokens, $stream_response);
         $duration = microtime(TRUE) - $start_time;
+        // The adapter might return a string or an object. log() handles both.
         $this->log('chat', $model, $params, $result, TRUE, $duration);
         return $result;
       }
@@ -529,6 +572,7 @@ class OpenAIApi {
     // If provider adapter exists and is not the OpenAI provider, ask it to
     // generate images. For gpt-image* models, call with minimal args.
     if ($this->provider !== 'openai' && method_exists($this->client, 'images')) {
+      $start_time = microtime(TRUE);
       try {
         if (preg_match('/^gpt-image/i', $model)) {
           $res = $this->client->images($model, $prompt);
@@ -537,8 +581,15 @@ class OpenAIApi {
           // Pass full parameters for providers that expect them.
           $res = $this->client->images($model, $prompt, $size, $response_format, $quality, $style, $output_format);
         }
+
+        $duration = microtime(TRUE) - $start_time;
+        // Log adapter image call
+        $this->log('images', $model, ['prompt' => $prompt, 'size' => $size, 'response_format' => $response_format], $res, TRUE, $duration);
       } catch (\Exception $e) {
+        $duration = microtime(TRUE) - $start_time;
         watchdog('openai', 'Provider adapter images() threw an exception: @error', ['@error' => $e->getMessage()], WATCHDOG_WARNING);
+        // Log the failure too
+        $this->log('images', $model, ['prompt' => $prompt, 'size' => $size, 'response_format' => $response_format], NULL, FALSE, $duration, $e->getMessage());
         $res = ['data' => []];
       }
 
@@ -564,7 +615,10 @@ class OpenAIApi {
           }
 
           if (preg_match('/https?:\/\/[^\s)"\]]+\.(png|jpg|jpeg|webp|gif)/i', $hay, $m)) {
-            return ['data' => [['url' => $m[0]]]];
+            $out = ['data' => [['url' => $m[0]]]];
+            $duration = microtime(TRUE) - $start_time;
+            $this->log('images', $model, ['prompt' => $prompt], $out, TRUE, $duration);
+            return $out;
           }
         }
       } catch (\Exception $e) {
@@ -627,8 +681,13 @@ class OpenAIApi {
         }
       }
 
+      $start_time = microtime(TRUE);
       $response = $this->client->images()->create($parameters);
       $result = $response->toArray();
+
+      $duration = microtime(TRUE) - $start_time;
+      // Log OpenAI native images call
+      $this->log('images', $model, $parameters, $result, TRUE, $duration);
 
       if (isset($result['data'])) {
         return $result;
@@ -636,7 +695,34 @@ class OpenAIApi {
 
       return ['data' => []];
     } catch (\Exception $e) {
-      watchdog('openai', 'There was an issue obtaining a response from OpenAI Images. The error was @error.', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
+      // Some OpenAI image models (or SDK versions) will reject the
+      // 'response_format' parameter (e.g. gpt-image variants). If that
+      // happens, retry the request without the parameter so we can still
+      // obtain a URL-based image response.
+      $msg = $e->getMessage();
+      if (!empty($parameters['response_format']) && stripos($msg, "Unknown parameter") !== FALSE) {
+        watchdog('openai', 'OpenAI images endpoint rejected response_format; retrying without it. Original error: @error', ['@error' => $msg], WATCHDOG_WARNING);
+        unset($parameters['response_format']);
+        try {
+          $start_time = microtime(TRUE);
+          $response = $this->client->images()->create($parameters);
+          $result = $response->toArray();
+          $duration = microtime(TRUE) - $start_time;
+          // Log the retry attempt as well
+          $this->log('images', $model, $parameters, $result, TRUE, $duration);
+          if (isset($result['data'])) {
+            return $result;
+          }
+          return ['data' => []];
+        } catch (\Exception $e2) {
+          watchdog('openai', 'Retry without response_format also failed: @error', ['@error' => $e2->getMessage()], WATCHDOG_ERROR);
+          return ['data' => []];
+        }
+      }
+
+      // Log the original error for visibility.
+      $this->log('images', $model, isset($parameters) ? $parameters : ['prompt' => $prompt], NULL, FALSE, 0.0, $msg);
+      watchdog('openai', 'There was an issue obtaining a response from OpenAI Images. The error was @error.', ['@error' => $msg], WATCHDOG_ERROR);
       return ['data' => []];
     }
   }
@@ -657,14 +743,20 @@ class OpenAIApi {
    *   The response from OpenAI.
    */
   public function textToSpeech(string $model, string $input, string $voice, string $response_format) {
+    $start_time = microtime(TRUE);
     try {
-      return $this->client->audio()->speech([
+      $resp = $this->client->audio()->speech([
         'model' => $model,
         'voice' => $voice,
         'input' => $input,
         'response_format' => $response_format,
       ]);
+      $duration = microtime(TRUE) - $start_time;
+      $this->log('textToSpeech', $model, ['input' => $input, 'voice' => $voice, 'response_format' => $response_format], $resp, TRUE, $duration);
+      return $resp;
     } catch (\Exception $e) {
+      $duration = microtime(TRUE) - $start_time;
+      $this->log('textToSpeech', $model, ['input' => $input, 'voice' => $voice], NULL, FALSE, $duration, $e->getMessage());
       watchdog('openai', 'There was an issue obtaining a response from OpenAI textToSpeech. The error was @error.', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
       return '';
     }
@@ -690,6 +782,7 @@ class OpenAIApi {
       throw new \InvalidArgumentException('The $task parameter must be one of transcribe or translate.');
     }
 
+    $start_time = microtime(TRUE);
     try {
       $response = $this->client->audio()->$task([
         'model' => $model,
@@ -699,8 +792,12 @@ class OpenAIApi {
       ]);
 
       $result = $response->toArray();
+      $duration = microtime(TRUE) - $start_time;
+      $this->log('speechToText', $model, ['file' => $file, 'task' => $task], $result, TRUE, $duration);
       return $result['text'];
     } catch (\Exception $e) {
+      $duration = microtime(TRUE) - $start_time;
+      $this->log('speechToText', $model, ['file' => $file, 'task' => $task], NULL, FALSE, $duration, $e->getMessage());
       watchdog('openai', 'There was an issue obtaining a response from OpenAI speechToText. The error was @error.', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
       return '';
     }
@@ -715,17 +812,40 @@ class OpenAIApi {
    * @return array
    *   The response from OpenAI moderation endpoint.
    */
-  public function moderation(string $input): array {
-    try {
-      $response = $this->client->moderations()->create(
-        [
-          'model' => 'omni-moderation-latest',
-          'input' => trim($input),
-        ],
-      );
+  public function moderation(string $input, string $model = 'omni-moderation-latest'): array {
+    $start_time = microtime(TRUE);
+    $params = [
+      'input' => substr($input, 0, 200),
+      'model' => $model,
+    ];
 
-      return $response->toArray();
+    // Delegate to provider if not OpenAI
+    if ($this->provider !== 'openai' && method_exists($this->client, 'moderation')) {
+      try {
+        $result = $this->client->moderation($input, $model);
+        $duration = microtime(TRUE) - $start_time;
+        $this->log('moderation', $model, $params, $result, TRUE, $duration);
+        return $result;
+      }
+      catch (\Exception $e) {
+        $duration = microtime(TRUE) - $start_time;
+        $this->log('moderation', $model, $params, NULL, FALSE, $duration, $e->getMessage());
+        throw $e;
+      }
+    }
+
+    try {
+      $response = $this->client->moderations()->create([
+        'model' => $model,
+        'input' => trim($input),
+      ]);
+      $result = $response->toArray();
+      $duration = microtime(TRUE) - $start_time;
+      $this->log('moderation', $model, $params, $result, TRUE, $duration);
+      return $result;
     } catch (\Exception $e) {
+      $duration = microtime(TRUE) - $start_time;
+      $this->log('moderation', $model, $params, NULL, FALSE, $duration, $e->getMessage());
       watchdog('openai', 'There was an issue obtaining a response from OpenAI moderation. The error was @error.', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
       return [];
     }
@@ -745,14 +865,30 @@ class OpenAIApi {
    * @throws \InvalidArgumentException
    *   Thrown if no model is provided.
    */
-  public function embedding(string $input, string $model): array {
+  public function embedding(string $input, string $model, bool $log = TRUE): array {
     if (empty($model)) {
       throw new \InvalidArgumentException('A model must be provided for generating embeddings.');
     }
 
+    $start_time = microtime(TRUE);
+    $params = ['input' => $input, 'model' => $model];
+
     // Delegate to provider if not OpenAI
     if ($this->provider !== 'openai' && method_exists($this->client, 'embedding')) {
-      return $this->client->embedding($input, $model);
+      try {
+        $res = $this->client->embedding($input, $model);
+        $duration = microtime(TRUE) - $start_time;
+        if ($log) {
+          $this->log('embedding', $model, $params, $res, TRUE, $duration);
+        }
+        return $res;
+      } catch (\Exception $e) {
+        $duration = microtime(TRUE) - $start_time;
+        if ($log) {
+          $this->log('embedding', $model, $params, NULL, FALSE, $duration, $e->getMessage());
+        }
+        throw $e;
+      }
     }
 
     // Original OpenAI implementation
@@ -763,8 +899,17 @@ class OpenAIApi {
       ]);
 
       $result = $response->toArray();
+      // Log embedding
+      if ($log) {
+        $duration = microtime(TRUE) - $start_time;
+        $this->log('embedding', $model, $params, $result, TRUE, $duration);
+      }
       return $result['data'][0]['embedding'];
     } catch (\Exception $e) {
+      if ($log) {
+        $duration = microtime(TRUE) - $start_time;
+        $this->log('embedding', $model, $params, NULL, FALSE, $duration, $e->getMessage());
+      }
       watchdog('openai', 'There was an issue obtaining a response from OpenAI embedding. The error was @error.', [
         '@error' => $e->getMessage(),
       ], WATCHDOG_ERROR);
@@ -833,9 +978,15 @@ class OpenAIApi {
         ],
       ];
 
+      $start_time = microtime(TRUE);
+      $params = ['imageUrl' => $imageUrl, 'model' => $model];
+
       // Delegate to provider adapter if not OpenAI
       if ($this->provider !== 'openai' && method_exists($this->client, 'chat')) {
         $result = $this->client->chat($model, $messages, 0.4, 300);
+        // Log adapter describeImage
+        $duration = microtime(TRUE) - $start_time;
+        $this->log('describeImage', $model, $params, $result, TRUE, $duration);
         return trim($result);
       }
 
@@ -848,12 +999,30 @@ class OpenAIApi {
 
       $result = $response->toArray();
 
+      // Log native describeImage
+      $duration = microtime(TRUE) - $start_time;
+      $this->log('describeImage', $model, $params, $result, TRUE, $duration);
+
       return isset($result["choices"][0]["message"]["content"])
         ? trim($result["choices"][0]["message"]["content"])
         : '';
     } catch (\Exception $e) {
+      $duration = microtime(TRUE) - $start_time;
+      $this->log('describeImage', $model, $params ?? ['imageUrl' => $imageUrl], NULL, FALSE, $duration, $e->getMessage());
       watchdog('openai', 'Error communicating with OpenAI: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
       return '';
     }
+   }
+
+  /**
+   * Public helper for adapters to request logging via the wrapper.
+   *
+   * This delegates to the protected log() method and acts as a safe public
+   * API so adapters can log request/response pairs when they are invoked
+   * through other entry points.
+   */
+  public function recordLog($operation, $model, $request_data, $response_data, $status, $duration, $error_message = NULL) {
+    // Delegate to protected logger.
+    $this->log($operation, $model, $request_data, $response_data, $status, $duration, $error_message);
   }
 }

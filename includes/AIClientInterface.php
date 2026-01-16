@@ -55,5 +55,5 @@ interface AIClientInterface {
    *
    * @return array
    */
-  public function embedding(string $input, string $model): array;
+  public function embedding(string $input, string $model, bool $log = TRUE): array;
 }

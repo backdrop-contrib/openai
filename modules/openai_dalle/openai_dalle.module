@@ -72,11 +72,35 @@ function openai_dalle_form($form, &$form_state) {
     backdrop_set_message(t('No image generation models are available from your configured providers. Please <a href="@url">configure a provider</a> in OpenAI settings.', ['@url' => url('admin/config/openai/settings')]), 'warning');
   }
 
+  // Determine default.
+  $default_model = 'openai/dall-e-3';
+
+  // To check if default exists, we need to check both flat and grouped
+  $flat_check = [];
+  foreach ($models as $g_label => $g_items) {
+    if (is_array($g_items)) {
+      foreach ($g_items as $k => $v) { $flat_check[$k] = $v; }
+    } else {
+      $flat_check[$g_label] = $g_items;
+    }
+  }
+
+  if (!empty($flat_check)) {
+    if (!isset($flat_check[$default_model])) {
+      if (isset($flat_check['dall-e-3'])) {
+        $default_model = 'dall-e-3';
+      } else {
+        reset($flat_check);
+        $default_model = key($flat_check);
+      }
+    }
+  }
+
   $form['model'] = [
     '#type' => 'select',
     '#title' => t('Model'),
     '#options' => $models,
-    '#default_value' => 'dall-e-3',
+    '#default_value' => $default_model,
     '#description' => t('Choose an image generation model. Different providers and models may have different capabilities.'),
   ];
 
@@ -212,12 +236,19 @@ function openai_dalle_form_submit($form, &$form_state) {
   $timestamp   = defined('REQUEST_TIME') ? REQUEST_TIME : time();
 
   try {
-    // Prefer base64 for GPT-image; otherwise prefer URL.
+    // Prefer URL responses for GPT-image models by default because many
+    // gpt-image variants and proxies return a hosted URL rather than a
+    // base64 payload. We still have fallback logic that will try b64_json
+    // when appropriate (see fallback to OpenAI provider below).
     $is_gpt_image = (bool) preg_match('/^gpt-image/i', $model);
-    $preferred_response_format = $is_gpt_image ? 'b64_json' : 'url';
+    $preferred_response_format = $is_gpt_image ? 'url' : 'url';
 
     // Debug: log which API instance and provider we're about to call so we
     // can confirm whether OpenRouterAdapter::images() will be used.
+    // Guard the watchdog logging with a try/catch so that if logging fails
+    // for any reason it won't abort image generation. That's why there are
+    // two try blocks: the outer one wraps the whole generation flow; this
+    // inner one only protects the diagnostic logging call below.
     try {
       $api_class = is_object($api) ? get_class($api) : 'none';
       watchdog('openai_dalle', 'Invoking image generation using provider @provider (API class: @class), model @model, prefer format @fmt', [

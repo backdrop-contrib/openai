@@ -5,8 +5,3 @@ package = OpenAI
 backdrop = 1.x
 configure = admin/config/openai/openai-content
 dependencies[] = openai
-
-; Added by Backdrop CMS packaging script on 2025-06-20
-project = openai
-version = 1.x-1.0.6
-timestamp = 1750432105

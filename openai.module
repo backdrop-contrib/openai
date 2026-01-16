@@ -273,7 +273,7 @@ function openai_settings_form($form, &$form_state) {
     '#type' => 'checkbox',
     '#title' => t('Enable API logging'),
     '#default_value' => config_get('openai.settings', 'openai_log_enabled') ?? FALSE,
-    '#description' => t('If enabled, all API calls will be logged to the database for debugging and auditing purposes.'),
+    '#description' => t('If enabled, AI tasks (chat, completions, etc.) will be logged to the database. Model discovery calls are never logged to avoid clutter.'),
   ];
 
   $form['logging']['openai_log_max_age'] = [
@@ -765,8 +765,7 @@ function openai_get_all_chat_models() {
           }
           // Build prefixed ID and label with provider prefix
           $prefixed_id = $provider_id . '/' . $canonical_id;
-          $prefixed_label = $provider_label . ': ' . $label;
-          $models[$prefixed_id] = $prefixed_label;
+          $models[$provider_label][$prefixed_id] = $label;
         }
       }
     }
@@ -778,8 +777,8 @@ function openai_get_all_chat_models() {
     }
   }
 
-  // Sort models alphabetically by their prefixed label
-  asort($models);
+  // Sort providers alphabetically
+  ksort($models);
 
   return $models;
 }
@@ -842,8 +841,7 @@ function openai_get_all_image_models() {
         $provider_label = openai_get_provider_label($provider_id);
         foreach ($provider_models as $model_id => $model_name) {
           $prefixed_id = $provider_id . '/' . $model_id;
-          $prefixed_label = $provider_label . ': ' . $model_name;
-          $models[$prefixed_id] = $prefixed_label;
+          $models[$provider_label][$prefixed_id] = $model_name;
         }
       }
     }
@@ -855,14 +853,13 @@ function openai_get_all_image_models() {
     }
   }
 
+  ksort($models);
+
   return $models;
 }
 
 /**
  * Get all vision models from all enabled providers.
- *
- * NOTE: Only OpenAI can reliably filter models by capability. For Ollama and
- * OpenRouter, we return ALL models since they cannot sort by capability.
  *
  * @return array
  *   Array of model options grouped by provider, suitable for select elements.
@@ -882,20 +879,19 @@ function openai_get_all_vision_models() {
         continue;
       }
 
-      // Only OpenAI can reliably filter by vision capability
-      if ($provider_id === 'openai') {
+      // If the provider adapter supports capability filtering, use it.
+      if (method_exists($provider_api, 'getVisionModels')) {
         $provider_models = $provider_api->getVisionModels();
-      } else {
-        // For Ollama/OpenRouter: return ALL models, they can't sort reliably
-        $provider_models = $provider_api->getModels();
+      }
+      elseif (method_exists($provider_api, 'getModelsByCapability')) {
+        $provider_models = $provider_api->getModelsByCapability('vision');
       }
 
       if (!empty($provider_models)) {
         $provider_label = openai_get_provider_label($provider_id);
         foreach ($provider_models as $model_id => $model_name) {
           $prefixed_id = $provider_id . '/' . $model_id;
-          $prefixed_label = $provider_label . ': ' . $model_name;
-          $models[$prefixed_id] = $prefixed_label;
+          $models[$provider_label][$prefixed_id] = $model_name;
         }
       }
     }
@@ -906,6 +902,106 @@ function openai_get_all_vision_models() {
       ], WATCHDOG_WARNING);
     }
   }
+
+  ksort($models);
+
+  return $models;
+}
+
+/**
+ * Get all models from all enabled providers.
+ *
+ * @return array
+ *   Array of model options grouped by provider, suitable for select elements.
+ */
+function openai_get_all_models() {
+  $models = [];
+  $providers_root = config_get('openai.settings', 'providers') ?: [];
+
+  foreach ($providers_root as $provider_id => $provider_config) {
+    if (empty($provider_config['enabled'])) {
+      continue;
+    }
+
+    try {
+      $provider_api = openai_get_api($provider_id);
+      if (!$provider_api) {
+        continue;
+      }
+
+      $provider_models = $provider_api->getModels();
+
+      if (!empty($provider_models)) {
+        $provider_label = openai_get_provider_label($provider_id);
+        foreach ($provider_models as $model_id => $model_name) {
+          $prefixed_id = $provider_id . '/' . $model_id;
+          $models[$provider_label][$prefixed_id] = $model_name;
+        }
+      }
+    }
+    catch (Exception $e) {
+      watchdog('openai', 'Failed to fetch models from @provider: @message', [
+        '@provider' => $provider_id,
+        '@message' => $e->getMessage(),
+      ], WATCHDOG_WARNING);
+    }
+  }
+
+  ksort($models);
+
+  return $models;
+}
+
+/**
+ * Get all moderation models from all enabled providers.
+ *
+ * @return array
+ *   Array of model options grouped by provider, suitable for select elements.
+ */
+function openai_get_all_moderation_models() {
+  $models = [];
+  $providers_root = config_get('openai.settings', 'providers') ?: [];
+
+  foreach ($providers_root as $provider_id => $provider_config) {
+    if (empty($provider_config['enabled'])) {
+      continue;
+    }
+
+    try {
+      $provider_api = openai_get_api($provider_id);
+      if (!$provider_api) {
+        continue;
+      }
+
+      // If the provider adapter supports capability filtering, use it.
+      if (method_exists($provider_api, 'getModerationModels')) {
+        $provider_models = $provider_api->getModerationModels();
+      }
+      elseif (method_exists($provider_api, 'getModelsByCapability')) {
+        $provider_models = $provider_api->getModelsByCapability('moderation');
+      }
+      else {
+        // Most providers do not have moderation models.
+        continue;
+      }
+
+      if (!empty($provider_models)) {
+        $provider_label = openai_get_provider_label($provider_id);
+        foreach ($provider_models as $model_id => $model_name) {
+          $prefixed_id = $provider_id . '/' . $model_id;
+          $models[$provider_label][$prefixed_id] = $model_name;
+        }
+      }
+    }
+    catch (Exception $e) {
+      watchdog('openai', 'Failed to fetch moderation models from @provider: @message', [
+        '@provider' => $provider_id,
+        '@message' => $e->getMessage(),
+      ], WATCHDOG_WARNING);
+    }
+  }
+
+  ksort($models);
 
   return $models;
 }
@@ -970,17 +1066,20 @@ function openai_get_api($provider_id = 'openai') {
     }
 
     if (class_exists($class)) {
-      // Pass the resolved API key (if available) or an empty string.
-      $api_key = NULL;
-      if (!empty($api_key_name)) {
-        $api_key = key_get_key_value($api_key_name);
-      }
+      // Instead of returning the raw adapter instance (which bypasses the
+      // OpenAIApi wrapper and therefore logging), return an OpenAIApi
+      // instance that will initialize the provider adapter internally.
       try {
-        return new $class($api_key ?: '');
+        // Resolve the API key value (may be NULL) to pass into the wrapper.
+        $api_key = NULL;
+        if (!empty($api_key_name)) {
+          $api_key = key_get_key_value($api_key_name);
+        }
+        return new OpenAIApi($api_key ?: '', $provider_id);
       }
       catch (Exception $e) {
-        watchdog('openai', 'Failed to instantiate provider class @class for @provider: @msg', ['@class' => $class, '@provider' => $provider_id, '@msg' => $e->getMessage()], WATCHDOG_WARNING);
-        // fallback to API wrapper below
+        watchdog('openai', 'Failed to instantiate OpenAIApi wrapper for @provider using adapter @class: @msg', ['@provider' => $provider_id, '@class' => $class, '@msg' => $e->getMessage()], WATCHDOG_WARNING);
+        // fallback to API wrapper below if possible
       }
     }
   }
@@ -1072,7 +1171,7 @@ function openai_moderation($input, $model = 'omni-moderation-latest') {
     throw new Exception(t('No API provider is configured for moderation.'));
   }
 
-  return $api->moderation($input);
+  return $api->moderation($input, $stripped_model);
 }
 
 /**
@@ -1192,7 +1291,7 @@ function openai_detect_embedding_dimension($model_id, $provider_id) {
       return 0;
     }
 
-    $test_embedding = $api->embedding("test", $model_id);
+    $test_embedding = $api->embedding("test", $model_id, FALSE);
     if (empty($test_embedding) || !is_array($test_embedding)) {
       return 0;
     }

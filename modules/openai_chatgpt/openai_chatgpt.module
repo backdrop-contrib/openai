@@ -105,44 +105,41 @@ function openai_chatgpt_form($form, &$form_state) {
     }
   }
 
-  // Ensure $models is a flat options array for the select element. If the
-  // provider functions returned grouped optgroups, the labels already include
-  // provider prefix from openai_get_all_chat_models().
-  $flat_options = [];
-  if (!empty($models) && is_array($models)) {
-    foreach ($models as $group_label => $group_items) {
-      if (is_array($group_items)) {
-        foreach ($group_items as $k => $v) {
-          $flat_options[$k] = $v;
-        }
-      }
-      else {
-        // In case a provider returned a simple map
-        foreach ((array) $models as $k => $v) {
-          $flat_options[$k] = $v;
-        }
-        break;
-      }
-    }
-  }
+  // Ensure $models is a options array for the select element.
+  $options = $models;
 
   // Determine default. If the existing default isn't available, pick the
   // first model from the list (if any).
-  $default_model = 'gpt-3.5-turbo';
-  if (!empty($flat_options)) {
-    if (!isset($flat_options[$default_model])) {
-      reset($flat_options);
-      $default_model = key($flat_options);
+  $default_model = 'openai/gpt-4o-mini';
+
+  // To check if default exists, we need to check both flat and grouped
+  $flat_check = [];
+  foreach ($models as $g_label => $g_items) {
+    if (is_array($g_items)) {
+      foreach ($g_items as $k => $v) { $flat_check[$k] = $v; }
+    } else {
+      $flat_check[$g_label] = $g_items;
+    }
+  }
+
+  if (!empty($flat_check)) {
+    if (!isset($flat_check[$default_model])) {
+      if (isset($flat_check['gpt-4o-mini'])) {
+        $default_model = 'gpt-4o-mini';
+      } else {
+        reset($flat_check);
+        $default_model = key($flat_check);
+      }
     }
   }
   else {
-    $default_model = 'gpt-3.5-turbo';
+    $default_model = 'openai/gpt-4o-mini';
   }
 
   $form['options']['model'] = [
     '#type' => 'select',
     '#title' => t('Model'),
-    '#options' => $flat_options,
+    '#options' => $options,
     '#default_value' => $default_model,
     '#description' => t('Select a model from any enabled AI provider. Available models and pricing vary by provider.'),
   ];

@@ -208,7 +208,7 @@ class OpenAIApi {
         continue;
       }
 
-      if (!preg_match('/^(gpt|text|tts|whisper|dall-e|o1)/i',
+      if (!preg_match('/^(gpt|text|tts|whisper|dall-e|o[1-9])/i',
         $model['id'])) {
         continue;
       }
@@ -261,8 +261,10 @@ class OpenAIApi {
       return $models;
     }
 
-    // For OpenAI, filter by known chat model patterns
-    return $this->filterModels(['gpt', 'o1', 'o3', 'o4']);
+    // For OpenAI, filter by known chat model patterns.
+    // Use 'gpt' to match all GPT models (gpt-3.5, gpt-4, gpt-5, etc.) and 'o[1-9]'
+    // to match o-series models (o1, o2, o3, etc.). This is future-proof.
+    return $this->filterModels(['gpt', 'o[1-9]']);
   }
 
   /**
@@ -362,11 +364,11 @@ class OpenAIApi {
       return $models;
     }
 
-    // For OpenAI, filter by known vision model patterns
-    // GPT-4o, GPT-4 Turbo, and vision-specific models support image input
-    $models = $this->filterModels(['gpt-4o', 'gpt-4-turbo', 'gpt-4-vision', 'o1-', 'o3-']);
-    asort($models);
-    return $models;
+    // For OpenAI, return all chat models since OpenAI doesn't provide capability
+    // metadata via the API, and most modern GPT models support vision anyway.
+    // This ensures new models (gpt-5, o-series, etc.) are automatically available
+    // without needing hardcoded prefixes.
+    return $this->getChatModels();
   }
 
   /**
@@ -418,7 +420,7 @@ class OpenAIApi {
           [
             'model' => $model,
             'prompt' => trim($prompt),
-            'temperature' => (int) $temperature,
+            'temperature' => (float) $temperature,
             'max_tokens' => (int) $max_tokens,
           ]
         );
@@ -446,7 +448,7 @@ class OpenAIApi {
           [
             'model' => $model,
             'prompt' => trim($prompt),
-            'temperature' => (int) $temperature,
+            'temperature' => (float) $temperature,
             'max_tokens' => (int) $max_tokens,
           ],
         );
@@ -484,6 +486,8 @@ class OpenAIApi {
    */
   public function chat(string $model, array $messages, $temperature, $max_tokens = 512, bool $stream_response = FALSE) {
     $start_time = microtime(TRUE);
+
+    // Build initial parameters with legacy approach
     $params = [
       'model' => $model,
       'messages' => $messages,
@@ -496,7 +500,6 @@ class OpenAIApi {
       try {
         $result = $this->client->chat($model, $messages, $temperature, $max_tokens, $stream_response);
         $duration = microtime(TRUE) - $start_time;
-        // The adapter might return a string or an object. log() handles both.
         $this->log('chat', $model, $params, $result, TRUE, $duration);
         return $result;
       }
@@ -507,43 +510,147 @@ class OpenAIApi {
       }
     }
 
-    // Original OpenAI implementation
-    try {
-      if ($stream_response) {
-        $stream = $this->client->chat()->createStreamed($params);
+    // Detect reasoning models - they need significantly more tokens because
+    // they use tokens for internal reasoning that don't appear in the response.
+    // $is_reasoning_model = preg_match('/^(gpt-5-nano|o1|o3)/i', $model);
+    // $adjusted_max_tokens = $is_reasoning_model ? (int) $max_tokens * 4 : (int) $max_tokens;
 
-        // Collect streamed chat deltas into a string and return it.
-        $out = '';
-        foreach ($stream as $data) {
-          $chunk = '';
-          if (is_object($data) && isset($data->choices[0]->delta->content)) {
-            $chunk = $data->choices[0]->delta->content;
-          }
-          elseif (is_array($data) && isset($data['choices'][0]['delta']['content'])) {
-            $chunk = $data['choices'][0]['delta']['content'];
-          }
-          $out .= $chunk;
+    // For OpenAI, try multiple parameter combinations in sequence
+    // $attempts = [
+    //   // Attempt 1: New parameter name, custom temperature (for newer models)
+    //   [
+    //     'temperature' => floatval($temperature),
+    //     'max_completion_tokens' => $adjusted_max_tokens,
+    //   ],
+    //   // Attempt 2: New parameter name, forced temperature = 1 (for restrictive models)
+    //   [
+    //     'temperature' => 1,
+    //     'max_completion_tokens' => $adjusted_max_tokens,
+    //   ],
+    //   // Attempt 3: Legacy parameters (for older models)
+    //   [
+    //     'temperature' => floatval($temperature),
+    //     'max_tokens' => (int) $max_tokens,
+    //   ],
+    //   // Attempt 4: Legacy parameter name, forced temperature = 1
+    //   [
+    //     'temperature' => 1,
+    //     'max_tokens' => (int) $max_tokens,
+    //   ],
+    // ];
+
+    // We'll build parameter attempts dynamically per token-multiplier pass.
+    $base_attempt_templates = [
+      // New parameter name (max_completion_tokens) preferred for newer models.
+      ['temperature' => floatval($temperature), 'max_completion_tokens' => NULL],
+      ['temperature' => 1, 'max_completion_tokens' => NULL],
+      // Legacy parameter name as fallback.
+      ['temperature' => floatval($temperature), 'max_tokens' => NULL],
+      ['temperature' => 1, 'max_tokens' => NULL],
+    ];
+
+    $last_error = NULL;
+
+    // Loop across multiplier attempts first, then across parameter templates.
+    for ($mult = 1; $mult <= $max_multiplier_attempts; $mult++) {
+      $current_max = $initial_max_tokens * ($mult === 1 ? 1 : ($mult === 2 ? 4 : 8));
+      foreach ($base_attempt_templates as $index => $template) {
+        // Merge model/messages with template and fill in the current max token
+        $attempt_params = $template;
+        if (isset($attempt_params['max_completion_tokens'])) {
+          $attempt_params['max_completion_tokens'] = $current_max;
         }
-        $duration = microtime(TRUE) - $start_time;
-        $this->log('chat', $model, $params, $out, TRUE, $duration);
-        return $out;
-      }
-      else {
-        $response = $this->client->chat()->create($params);
+        if (isset($attempt_params['max_tokens'])) {
+          $attempt_params['max_tokens'] = $current_max;
+        }
+        $request_params = array_merge(['model' => $model, 'messages' => $messages], $attempt_params);
 
-        $result = $response->toArray();
-        $content = trim($result['choices'][0]['message']['content']);
-        $duration = microtime(TRUE) - $start_time;
-        $this->log('chat', $model, $params, $result, TRUE, $duration);
-        return $content;
+        try {
+          if ($stream_response) {
+            $stream = $this->client->chat()->createStreamed($request_params);
+            $out = '';
+            foreach ($stream as $data) {
+              $chunk = '';
+              if (is_object($data) && isset($data->choices[0]->delta->content)) {
+                $chunk = $data->choices[0]->delta->content;
+              }
+              elseif (is_array($data) && isset($data['choices'][0]['delta']['content'])) {
+                $chunk = $data['choices'][0]['delta']['content'];
+              }
+              $out .= $chunk;
+            }
+            $duration = microtime(TRUE) - $start_time;
+            $this->log('chat', $model, $request_params, $out, TRUE, $duration);
+            return $out;
+          }
+          else {
+            $response = $this->client->chat()->create($request_params);
+            $result = $response->toArray();
+            $content = trim($result['choices'][0]['message']['content']);
+
+            // Check if we got an empty response due to reasoning token exhaustion
+            // if (empty($content) && $is_reasoning_model && isset($result['usage']['completion_tokens_details']['reasoning_tokens'])) {
+            //   $reasoning_tokens = $result['usage']['completion_tokens_details']['reasoning_tokens'];
+            //   if ($reasoning_tokens > 0) {
+            //     // Try again with even more tokens
+            //     $request_params['max_completion_tokens'] = $adjusted_max_tokens * 2;
+            //     watchdog('openai', 'Reasoning model @model used @reasoning reasoning tokens with empty response. Retrying with @new_max tokens.',
+            //       array('@model' => $model, '@reasoning' => $reasoning_tokens, '@new_max' => $adjusted_max_tokens * 2),
+            //       WATCHDOG_DEBUG);
+
+            //     $response = $this->client->chat()->create($request_params);
+            //     $result = $response->toArray();
+            //     $content = trim($result['choices'][0]['message']['content']);
+            //   }
+            // }
+
+            // Extract content safely
+            if (!empty($result['choices'][0]['message']['content'])) {
+              $content = trim($result['choices'][0]['message']['content']);
+            }
+
+            // If response is empty or finished due to length, consider retrying
+            $finish_reason = $result['choices'][0]['finish_reason'] ?? NULL;
+            $used_completion_tokens = $result['usage']['completion_tokens'] ?? ($result['usage']['completion_tokens_details']['reasoning_tokens'] ?? 0);
+
+            $should_retry_for_tokens = (
+              ($content === '' || strtolower($finish_reason) === 'length') &&
+              $used_completion_tokens > 0 &&
+              $mult < $max_multiplier_attempts
+            );
+
+            if ($should_retry_for_tokens) {
+              watchdog('openai', 'Empty/length-limited response from model @model on mult=@mult; used_completion_tokens=@used. Retrying with higher token multiplier.', ['@model'=>$model,'@mult'=>$mult,'@used'=>$used_completion_tokens], WATCHDOG_DEBUG);
+              // Continue to next iteration which will increase multiplier or try different params
+              continue 2;
+            }
+
+            $duration = microtime(TRUE) - $start_time;
+            $this->log('chat', $model, $request_params, $result, TRUE, $duration);
+            return $content;
+          }
+        }
+        catch (\Exception $e) {
+          $last_error = $e->getMessage();
+
+          // If this is the last attempt, log and fail
+          if ($index === count($attempts) - 1) {
+            $duration = microtime(TRUE) - $start_time;
+            $this->log('chat', $model, $request_params, NULL, FALSE, $duration, $last_error);
+            watchdog('openai', 'There was an issue obtaining a response from OpenAI chat after @count attempts. The final error was @error.', array('@count' => count($attempts), '@error' => $last_error), WATCHDOG_ERROR);
+            return '';
+          }
+
+          // Otherwise, continue to next attempt
+          watchdog('openai', 'Chat attempt @num failed for model @model: @error. Trying alternate parameters.', array('@num' => $index + 1, '@model' => $model, '@error' => $last_error), WATCHDOG_DEBUG);
+          continue;
+        }
       }
-    } catch (\Exception $e) {
-      $duration = microtime(TRUE) - $start_time;
-      $this->log('chat', $model, $params, NULL, FALSE, $duration, $e->getMessage());
-      watchdog('openai', 'There was an issue obtaining a response from OpenAI chat. The error was @error.', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
-      return '';
     }
-  }
+
+     // Should never reach here, but fallback
+     return '';
+   }
 
   /**
    * Generate an image.

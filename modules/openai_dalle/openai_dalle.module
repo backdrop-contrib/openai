@@ -236,12 +236,11 @@ function openai_dalle_form_submit($form, &$form_state) {
   $timestamp   = defined('REQUEST_TIME') ? REQUEST_TIME : time();
 
   try {
-    // Prefer URL responses for GPT-image models by default because many
-    // gpt-image variants and proxies return a hosted URL rather than a
-    // base64 payload. We still have fallback logic that will try b64_json
-    // when appropriate (see fallback to OpenAI provider below).
+    // GPT-image models typically return base64-encoded JSON responses,
+    // while DALL-E models return URLs. We handle both formats in the
+    // response processing logic below.
     $is_gpt_image = (bool) preg_match('/^gpt-image/i', $model);
-    $preferred_response_format = $is_gpt_image ? 'url' : 'url';
+    $preferred_response_format = $is_gpt_image ? 'b64_json' : 'url';
 
     // Debug: log which API instance and provider we're about to call so we
     // can confirm whether OpenRouterAdapter::images() will be used.

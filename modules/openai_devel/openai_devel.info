@@ -7,4 +7,3 @@ configure = admin/devel/generate/content-gpt
 dependencies[] = openai
 dependencies[] = devel
 dependencies[] = devel_generate
-

@@ -5,4 +5,3 @@ package = OpenAI
 backdrop = 1.x
 configure = admin/config/openai/dalle
 dependencies[] = openai
-

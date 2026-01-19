@@ -4,6 +4,4 @@ package = OpenAI
 type = module
 backdrop = 1.x
 dependencies[] = openai
-
 configure = admin/config/openai/moderation
-

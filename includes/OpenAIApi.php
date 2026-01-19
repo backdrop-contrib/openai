@@ -540,6 +540,10 @@ class OpenAIApi {
     // ];
 
     // We'll build parameter attempts dynamically per token-multiplier pass.
+    // Initialize token multiplier strategy without hardcoded model names.
+    $initial_max_tokens = (int) $max_tokens;
+    $max_multiplier_attempts = 3; // will try multipliers: 1x, 4x, 8x
+
     $base_attempt_templates = [
       // New parameter name (max_completion_tokens) preferred for newer models.
       ['temperature' => floatval($temperature), 'max_completion_tokens' => NULL],
@@ -634,15 +638,17 @@ class OpenAIApi {
           $last_error = $e->getMessage();
 
           // If this is the last attempt, log and fail
-          if ($index === count($attempts) - 1) {
+          if ($mult === $max_multiplier_attempts && $index === count($base_attempt_templates) - 1) {
             $duration = microtime(TRUE) - $start_time;
             $this->log('chat', $model, $request_params, NULL, FALSE, $duration, $last_error);
-            watchdog('openai', 'There was an issue obtaining a response from OpenAI chat after @count attempts. The final error was @error.', array('@count' => count($attempts), '@error' => $last_error), WATCHDOG_ERROR);
+            $total_attempts = $max_multiplier_attempts * count($base_attempt_templates);
+            watchdog('openai', 'There was an issue obtaining a response from OpenAI chat after @count attempts. The final error was @error.', array('@count' => $total_attempts, '@error' => $last_error), WATCHDOG_ERROR);
             return '';
           }
 
-          // Otherwise, continue to next attempt
-          watchdog('openai', 'Chat attempt @num failed for model @model: @error. Trying alternate parameters.', array('@num' => $index + 1, '@model' => $model, '@error' => $last_error), WATCHDOG_DEBUG);
+          // Otherwise, log the failed attempt and continue to the next attempt
+          $attempt_number = (($mult - 1) * count($base_attempt_templates)) + ($index + 1);
+          watchdog('openai', 'Chat attempt @num failed for model @model: @error. Trying alternate parameters.', array('@num' => $attempt_number, '@model' => $model, '@error' => $last_error), WATCHDOG_DEBUG);
           continue;
         }
       }
@@ -863,7 +869,7 @@ class OpenAIApi {
       return $resp;
     } catch (\Exception $e) {
       $duration = microtime(TRUE) - $start_time;
-      $this->log('textToSpeech', $model, ['input' => $input, 'voice' => $voice], NULL, FALSE, $duration, $e->getMessage());
+      $this->log('textToSpeech', $model, ['input' => $input, 'voice' => $response_format], NULL, FALSE, $duration, $e->getMessage());
       watchdog('openai', 'There was an issue obtaining a response from OpenAI textToSpeech. The error was @error.', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
       return '';
     }

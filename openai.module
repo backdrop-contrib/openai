@@ -1297,7 +1297,7 @@ function openai_get_embedding_dimension($model_id, $provider_id = 'openai') {
 function openai_detect_embedding_dimension($model_id, $provider_id) {
   $cache_key = "embedding_dim:{$provider_id}:{$model_id}";
   $cached = cache_get($cache_key);
-  if ($cached && !empty($cached->data)) {
+  if ($cached && property_exists($cached, 'data')) {
     return (int) $cached->data;
   }
 

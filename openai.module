@@ -791,12 +791,14 @@ function openai_get_all_chat_models() {
  */
 function openai_fetch_available_models() {
   try {
-    $apiKey = key_get_key_value(config('openai.settings')->get('api_key'));
-    if (empty($apiKey) || !is_string($apiKey)) {
-      watchdog('openai', 'The API key could not be retrieved or is invalid.', [], WATCHDOG_ERROR);
+    // Use the central provider-aware API factory so we respect the providers
+    // configuration (e.g., providers.openai.api_key) instead of the legacy
+    // openai.settings:api_key value.
+    $api = openai_get_api('openai');
+    if (!$api) {
+      watchdog('openai', 'The OpenAI API client could not be initialized. Check provider configuration.', [], WATCHDOG_ERROR);
       return [];
     }
-    $api = new OpenAIApi($apiKey);
     return $api->getModels();
   }
   catch (Exception $e) {

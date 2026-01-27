@@ -1198,6 +1198,14 @@ function openai_get_all_embedding_models_with_dimensions() {
           $dimension = openai_get_embedding_dimension($model_id, $provider_id);
 
           // Only include models that actually support embeddings (dimension > 0)
+          // Note: `openai_get_embedding_dimension()` currently falls back to 1536
+          // when dynamic detection fails. That means unknown or unsupported
+          // models may appear to have a nonzero dimension and won't be
+          // excluded by this check. If the intent is to only include models
+          // with a known/confirmed embedding dimension, use
+          // `openai_detect_embedding_dimension()` here or update
+          // `openai_get_embedding_dimension()` to return 0 when detection
+          // fails and there is no known override.
           if ($dimension <= 0) {
             continue;
           }

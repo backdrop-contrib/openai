@@ -333,7 +333,14 @@ class OpenAIAdapter implements AIClientInterface {
           $this->api->recordLog('embedding', $model, ['input' => $input], NULL, FALSE, $duration, $e->getMessage());
         }
         $error_msg = $e->getMessage();
-        // Suppress log if it's a "does not support embeddings" or similar during probing.
+        // Suppress log if it's a "does not support embeddings" message during probing.
+        // NOTE: The previous check also suppressed any message containing
+        // "not found", which is too broad and may hide real issues such as
+        // misconfigured model IDs. Probing already calls embedding with
+        // $log = FALSE, so this extra suppression is not needed for probes.
+        // Consider restricting suppression to the exact "does not support
+        // embeddings" text (or checking an explicit probe flag) so genuine
+        // errors still surface in logs.
         if (strpos($error_msg, 'does not support embeddings') === FALSE && strpos($error_msg, 'not found') === FALSE) {
           watchdog('openai', 'Embedding error: @error', ['@error' => $error_msg], WATCHDOG_ERROR);
         }

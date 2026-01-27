@@ -309,15 +309,35 @@ class OpenAIAdapter implements AIClientInterface {
    * {@inheritdoc}
    */
   public function embedding(string $input, string $model, bool $log = TRUE): array {
+    $start_time = microtime(TRUE);
     try {
       $response = $this->client->embeddings()->create([
         'model' => $model,
         'input' => $input,
       ])->toArray();
 
-      return $response['data'][0]['embedding'] ?? [];
+      $vector = $response['data'][0]['embedding'] ?? [];
+
+      if ($log) {
+        if (isset($this->api) && method_exists($this->api, 'recordLog')) {
+          $duration = microtime(TRUE) - $start_time;
+          $this->api->recordLog('embedding', $model, ['input' => $input], $response, TRUE, $duration);
+        }
+      }
+
+      return $vector;
     } catch (TransporterException | \Exception $e) {
-      watchdog('openai', 'Embedding error: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
+      if ($log) {
+        if (isset($this->api) && method_exists($this->api, 'recordLog')) {
+          $duration = microtime(TRUE) - $start_time;
+          $this->api->recordLog('embedding', $model, ['input' => $input], NULL, FALSE, $duration, $e->getMessage());
+        }
+        $error_msg = $e->getMessage();
+        // Suppress log if it's a "does not support embeddings" or similar during probing.
+        if (strpos($error_msg, 'does not support embeddings') === FALSE && strpos($error_msg, 'not found') === FALSE) {
+          watchdog('openai', 'Embedding error: @error', ['@error' => $error_msg], WATCHDOG_ERROR);
+        }
+      }
       return [];
     }
   }

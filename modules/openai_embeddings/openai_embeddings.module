@@ -27,11 +27,11 @@ function openai_embeddings_autoload_info() {
  * Implements hook_help().
  */
 function openai_embeddings_help($path, $arg) {
-  if ($path == 'admin/config/openai/openai-embeddings' || 
+  if ($path == 'admin/config/openai/openai-embeddings' ||
       strpos($path, 'admin/config/openai/openai-embeddings') === 0) {
-    return '<div class="messages warning">' . 
-      t('<strong>This module is deprecated.</strong> Please use <a href="@search_api_ai">Search API AI</a> instead, which provides the same embedding functionality with better Search API integration, more vector database options, and active development.', 
-        array('@search_api_ai' => 'https://backdropcms.org/project/search_api_ai')) . 
+    return '<div class="messages warning">' .
+      t('<strong>This module is deprecated.</strong> Please use <a href="@search_api_ai">Search API AI</a> instead, which provides the same embedding functionality with better Search API integration, more vector database options, and active development.',
+        array('@search_api_ai' => 'https://backdropcms.org/project/search_api_ai')) .
       '</div>';
   }
 }
@@ -198,18 +198,18 @@ function openai_embeddings_settings_form(array $form, array &$form_state) {
   // Model section - get embedding models from all enabled providers
   $models = [];
   $providers_root = config_get('openai.settings', 'providers') ?: [];
-  
+
   foreach ($providers_root as $provider_id => $provider_config) {
     if (empty($provider_config['enabled'])) {
       continue;
     }
-    
+
     try {
       $provider_api = openai_get_api($provider_id);
       if (!$provider_api) {
         continue;
       }
-      
+
       // Try to get embedding models, or fall back to all models
       if (method_exists($provider_api, 'getEmbeddingModels')) {
         $provider_models = $provider_api->getEmbeddingModels();
@@ -217,7 +217,7 @@ function openai_embeddings_settings_form(array $form, array &$form_state) {
         // Fallback: return all models (Ollama can't sort)
         $provider_models = $provider_api->getModels();
       }
-      
+
       if (!empty($provider_models)) {
         $provider_label = openai_get_provider_label($provider_id);
         foreach ($provider_models as $model_id => $model_name) {
@@ -437,7 +437,12 @@ function openai_embeddings_search_form_ajax_callback($form, &$form_state) {
     $config = config('openai_embeddings.settings');
     $model  = $config->get('model');
     if (!$model) throw new Exception('No model configured for embeddings.');
-    $embedding = $openai_api->embedding($text, $model);
+    try {
+      $embedding = $openai_api->embedding($text, $model);
+    } catch (Exception $e) {
+      watchdog('openai_embeddings', 'Failed to generate embedding for query: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
+      $embedding = [];
+    }
     if (empty($embedding)) throw new Exception('Failed to retrieve embedding.');
 
     // 3. Init vector client

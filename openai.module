@@ -1197,7 +1197,15 @@ function openai_get_all_embedding_models_with_dimensions() {
         foreach ($provider_models as $model_id => $model_name) {
           $dimension = openai_get_embedding_dimension($model_id, $provider_id);
 
-          $models[$model_id] = [
+          // Only include models that actually support embeddings (dimension > 0)
+          if ($dimension <= 0) {
+            continue;
+          }
+
+          // Prefix model ID with provider to create fully-qualified name
+          $qualified_id = $provider_id . '/' . $model_id;
+
+          $models[$qualified_id] = [
             'name' => $model_name,
             'provider' => $provider_id,
             'dimension' => $dimension,
@@ -1291,8 +1299,12 @@ function openai_detect_embedding_dimension($model_id, $provider_id) {
       return 0;
     }
 
+    // Suppress watchdog errors for this specific check to avoid log spam
+    // when checking models that don't support embeddings.
     $test_embedding = $api->embedding("test", $model_id, FALSE);
     if (empty($test_embedding) || !is_array($test_embedding)) {
+      // If detection failed, cache a 0 for a shorter time to avoid repeated failed calls
+      cache_set($cache_key, 0, 'cache', time() + 3600);
       return 0;
     }
 

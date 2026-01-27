@@ -37,9 +37,9 @@ class OpenAIApi {
   /**
    * Helper function to log API requests and responses.
    */
-  protected function log($operation, $model, $request_data, $response_data, $status, $duration, $error_message = NULL) {
-    // Only log if enabled in settings.
-    if (!config_get('openai.settings', 'openai_log_enabled')) {
+  protected function log($operation, $model, $request_data, $response_data, $status, $duration, $error_message = NULL, $force_suppress = FALSE) {
+    // Only log if enabled in settings and not forced to suppress.
+    if ($force_suppress || !config_get('openai.settings', 'openai_log_enabled')) {
       return;
     }
 
@@ -50,15 +50,24 @@ class OpenAIApi {
       $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 10);
       $module = 'openai';
       foreach ($backtrace as $step) {
-        if (isset($step['function']) && str_starts_with($step['function'], 'openai_')) {
-          // If it's a wrapper function in openai.module, keep looking for the caller.
-          if ($step['function'] === 'openai_chat' || $step['function'] === 'openai_moderation') {
-            continue;
+        if (isset($step['function'])) {
+          if (str_starts_with($step['function'], 'openai_')) {
+            // If it's a wrapper function in openai.module, keep looking for the caller.
+            if ($step['function'] === 'openai_chat' || $step['function'] === 'openai_moderation') {
+              continue;
+            }
+            // Extract module name from function name (e.g. openai_devel_generate_content -> openai_devel)
+            if (preg_match('/^(openai_[a-z0-9_]+?)_/', $step['function'], $matches)) {
+              $module = $matches[1];
+              break;
+            }
           }
-          // Extract module name from function name (e.g. openai_devel_generate_content -> openai_devel)
-          if (preg_match('/^(openai_[a-z0-9_]+?)_/', $step['function'], $matches)) {
-            $module = $matches[1];
-            break;
+          elseif (str_starts_with($step['function'], 'search_api_ai_')) {
+            // Extract module name from Search API AI function name
+            if (preg_match('/^(search_api_ai[a-z0-9_]*?)_/', $step['function'], $matches)) {
+              $module = $matches[1];
+              break;
+            }
           }
         }
       }
@@ -1018,17 +1027,13 @@ class OpenAIApi {
     // Delegate to provider if not OpenAI
     if ($this->provider !== 'openai' && method_exists($this->client, 'embedding')) {
       try {
-        $res = $this->client->embedding($input, $model);
+        $res = $this->client->embedding($input, $model, $log);
         $duration = microtime(TRUE) - $start_time;
-        if ($log) {
-          $this->log('embedding', $model, $params, $res, TRUE, $duration);
-        }
+        $this->log('embedding', $model, $params, $res, TRUE, $duration, NULL, !$log);
         return $res;
       } catch (\Exception $e) {
         $duration = microtime(TRUE) - $start_time;
-        if ($log) {
-          $this->log('embedding', $model, $params, NULL, FALSE, $duration, $e->getMessage());
-        }
+        $this->log('embedding', $model, $params, NULL, FALSE, $duration, $e->getMessage(), !$log);
         throw $e;
       }
     }
@@ -1042,19 +1047,17 @@ class OpenAIApi {
 
       $result = $response->toArray();
       // Log embedding
-      if ($log) {
-        $duration = microtime(TRUE) - $start_time;
-        $this->log('embedding', $model, $params, $result, TRUE, $duration);
-      }
+      $duration = microtime(TRUE) - $start_time;
+      $this->log('embedding', $model, $params, $result, TRUE, $duration, NULL, !$log);
       return $result['data'][0]['embedding'];
     } catch (\Exception $e) {
+      $duration = microtime(TRUE) - $start_time;
+      $this->log('embedding', $model, $params, NULL, FALSE, $duration, $e->getMessage(), !$log);
       if ($log) {
-        $duration = microtime(TRUE) - $start_time;
-        $this->log('embedding', $model, $params, NULL, FALSE, $duration, $e->getMessage());
+        watchdog('openai', 'There was an issue obtaining a response from OpenAI embedding. The error was @error.', [
+          '@error' => $e->getMessage(),
+        ], WATCHDOG_ERROR);
       }
-      watchdog('openai', 'There was an issue obtaining a response from OpenAI embedding. The error was @error.', [
-        '@error' => $e->getMessage(),
-      ], WATCHDOG_ERROR);
       return [];
     }
   }
@@ -1163,8 +1166,8 @@ class OpenAIApi {
    * API so adapters can log request/response pairs when they are invoked
    * through other entry points.
    */
-  public function recordLog($operation, $model, $request_data, $response_data, $status, $duration, $error_message = NULL) {
+  public function recordLog($operation, $model, $request_data, $response_data, $status, $duration, $error_message = NULL, $force_suppress = FALSE) {
     // Delegate to protected logger.
-    $this->log($operation, $model, $request_data, $response_data, $status, $duration, $error_message);
+    $this->log($operation, $model, $request_data, $response_data, $status, $duration, $error_message, $force_suppress);
   }
 }

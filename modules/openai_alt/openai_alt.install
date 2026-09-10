@@ -51,7 +51,8 @@ function openai_alt_install() {
  */
 function openai_alt_uninstall() {
   // Delete the image style on module uninstall.
-  if (image_style_load('ai_image_alt_text')) {
-    image_style_delete('ai_image_alt_text');
+  $style = image_style_load('ai_image_alt_text');
+  if ($style) {
+    image_style_delete($style);
   }
 }

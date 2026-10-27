@@ -1,11 +1,22 @@
 # OpenAI / ChatGPT / AI Search Integration
 
-**This module is deprecated.** Future development is moving to the
-[AI](https://github.com/backdrop-contrib/ai) and
-[AI Provider OpenAI](https://github.com/backdrop-contrib/ai_provider_openai)
-modules. Those modules are still in active development and have not had a
-stable release yet, so this module will continue to receive critical fixes
-until a suitable replacement is available.
+> **Deprecated:** This module is no longer developed. It is replaced by
+> [`ai`](https://github.com/backdrop-contrib/ai) and [`ai_provider_openai`](https://github.com/backdrop-contrib/ai_provider_openai), part of the [AI](https://github.com/backdrop-contrib/ai) suite for Backdrop CMS.
+
+The submodules map to the AI suite as follows: `openai_alt` → `ai_alt`,
+`openai_ckeditor` → `ai_ckeditor`, `openai_content` → `ai_content`,
+`openai_dblog` → `ai_dblog`, `openai_moderation` → `ai_moderation`, and
+`openai_chatgpt`, `openai_audio`, `openai_tts` and `openai_dalle` →
+`ai_explorer`. `openai_prompt` and `openai_embeddings` have no replacement
+and are disabled by the upgrade.
+
+If you have this module installed, upgrade to the replacement:
+
+1. Add the [AI](https://github.com/backdrop-contrib/ai) module and the replacement module(s) to your site.
+2. Enable **AI Upgrade UI** (`ai_upgrade`, included with AI).
+3. Run the upgrade at `admin/config/ai/upgrade` (or `bee ai-upgrade`). It
+   enables the replacements, copies your settings, permissions, blocks and
+   stored data, and disables this module.
 
 The Backdrop CMS OpenAI module makes it possible to interact with the
 [OpenAI API](https://openai.com/) to implement features using

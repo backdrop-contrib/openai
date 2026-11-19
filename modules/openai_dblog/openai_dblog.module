@@ -132,6 +132,9 @@ function openai_dblog_menu_alter(&$items) {
     $items['admin/reports/event/%']['page callback'] = 'openai_dblog_event_details';
   }
 }
+// Guard: the AI suite's ai_dblog module declares the same function, which
+// would cause a fatal "Cannot redeclare" error (e.g. during uninstall).
+if (!function_exists('openai_dblog_event_details')) {
 function openai_dblog_event_details($id) {
   // No need for require_once if autoload is set up correctly
   // require_once BACKDROP_ROOT . '/' . drupal_get_path('module', 'openai_dblog') . '/includes/OpenAIDbLog.inc';
@@ -211,6 +214,7 @@ function openai_dblog_event_details($id) {
   else {
     return '';
   }
+}
 }
 
 
